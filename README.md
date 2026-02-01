@@ -75,7 +75,6 @@ ie.
     pip install -r requirements.txt
     ```
 
-
 ---
 
 ## Usage
@@ -136,6 +135,11 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 
 ### Visual Examples
+
+**Sample output**
+"DAUBLG Makes it Right!" ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
+
+![Saturation vs Contrast matrix](images/daublg-avf1.png) ![Saturation vs Contrast matrix](images/daublg-avf2.png)
 
 **Saturation vs Contrast matrix**
 
