@@ -134,21 +134,23 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 
-### Visual Examples
+### Parameter Comparison
 
 **Saturation vs Contrast matrix**
 
 ![Saturation vs Contrast matrix](images/contrast-vs-saturation.png)
 
-**Sample output**
-"DAUBLG Makes it Right!" ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
+### Output examples
+
+**"DAUBLG Makes it Right!"** ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
+
 Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0Gm0vs/view?usp=sharing) [NTSC](https://drive.google.com/file/d/1UhUVOQMtQdMp4kDoz1Lhlnayg7lL8b0n/view?usp=sharing)
 
 | **Sample 1**                                | **Sample 2**                                |
 | --------------------------------------------| ------------------------------------------- |
 | ![DAUBLG Example 1](images/daublg-avf1.png) | ![DAUBLG Example 2](images/daublg-avf2.png) |
 
-Topo & Roby "Under the Ice" (Live) ([source video](https://www.youtube.com/watch?v=iR7pwtqyZio)).
+**Topo & Roby "Under the Ice" (Live)** ([source video](https://www.youtube.com/watch?v=iR7pwtqyZio)).
 
 | **Sample 1**                                        | **Sample 2**                                        |
 | ----------------------------------------------------| --------------------------------------------------- |
