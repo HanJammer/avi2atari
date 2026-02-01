@@ -45,7 +45,7 @@ ie.
 1. **Clone the repository:**
     
     ```
-    git clone https://github.com/your-username/avi2atari.git
+    git clone https://github.com/HanJammer/avi2atari.git
     cd avi2atari
     ```
     
