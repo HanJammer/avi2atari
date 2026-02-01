@@ -139,7 +139,7 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 
 **Saturation vs Contrast matrix**
 
-![[images/contrast-vs-saturation.png]]
+![Saturation vs Contrast matrix](images/contrast-vs-saturation.png)
 
 ---
 
