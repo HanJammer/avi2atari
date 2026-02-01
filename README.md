@@ -142,11 +142,16 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 
 **Sample output**
 "DAUBLG Makes it Right!" ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
+Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0Gm0vs/view?usp=sharing) [NTSC](https://drive.google.com/file/d/1UhUVOQMtQdMp4kDoz1Lhlnayg7lL8b0n/view?usp=sharing)
 
+| **Sample 1**                                | **Sample 2**                                |
+| --------------------------------------------| ------------------------------------------- |
 | ![DAUBLG Example 1](images/daublg-avf1.png) | ![DAUBLG Example 2](images/daublg-avf2.png) |
 
-Topo & Roby "Under the Ice" (Live) ([source video]()).
+Topo & Roby "Under the Ice" (Live) ([source video](https://www.youtube.com/watch?v=iR7pwtqyZio)).
 
+| **Sample 1**                                        | **Sample 2**                                        |
+| ----------------------------------------------------| --------------------------------------------------- |
 | ![Topo & Roby Example 1](images/topo-roby-avf1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2.png) |
 
 ---
