@@ -136,14 +136,18 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 
 ### Visual Examples
 
-**Sample output**
-"DAUBLG Makes it Right!" ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
-
-![Saturation vs Contrast matrix](images/daublg-avf1.png) ![Saturation vs Contrast matrix](images/daublg-avf2.png)
-
 **Saturation vs Contrast matrix**
 
 ![Saturation vs Contrast matrix](images/contrast-vs-saturation.png)
+
+**Sample output**
+"DAUBLG Makes it Right!" ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
+
+| ![DAUBLG Example 1](images/daublg-avf1.png) | ![DAUBLG Example 2](images/daublg-avf2.png) |
+
+Topo & Roby "Under the Ice" (Live) ([source video]()).
+
+| ![Topo & Roby Example 1](images/topo-roby-avf1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2.png) |
 
 ---
 
