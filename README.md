@@ -137,9 +137,9 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 
 ### Visual Examples
 
-**Original (1.0) vs Saturated (1.5)**
+**Saturation vs Contrast matrix**
 
-> _[Place your comparison screenshots here]_
+![[images/contrast-vs-saturation.png]]
 
 ---
 
