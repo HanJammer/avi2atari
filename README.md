@@ -43,7 +43,7 @@ Open the Command Prompt, then:
     git clone https://github.com/HanJammer/avi2atari.git
     cd avi2atari
     python -m pip install -r requirements.txt
-    python avi2atari.py
+    python avi2atari.py --test-gen --system PAL
 
 ### The regular (recommended) way:
 
@@ -64,9 +64,7 @@ Then:
     
 2. **Create a Virtual Environment (Recommended):**
     
-    - **Windows (PowerShell):**
-        
-        PowerShell
+    - **Windows (Command Prompt / PowerShell):**
         
         ```
         python -m venv venv
@@ -74,8 +72,6 @@ Then:
         ```
         
     - **Linux / macOS:**
-        
-        Bash
         
         ```
         python3 -m venv venv
@@ -175,9 +171,9 @@ Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0
 
 I tested the output files extensively on my Atari 130XE with SUB Cart (yet to be tested on my 800XL).
 
-1. **Storage Speed:** Playing AVF video requires a data transfer rate of approx. **8.7 KB/frame** (over 430 KB/s). This requires fast storage solutions like **SUB Cart** (tested), **AVG Cart** (not tested but should work just like SUB Cart), **SIDE3** (needs testing). Standard floppy emulators (SIO2SD) are too slow.
+1. **Storage Speed:** Playing AVF video requires a data transfer rate of approx. **8.7 KB/frame** (over 430 KB/s). This requires fast storage solutions like **SUB Cart** (tested), **AVG Cart** (not tested but should work just like SUB Cart), **SIDE2/3** (needs testing - SIDE2/SIDE3 do not play AVF "natively". You need an AVF player that supports SIDE access and the correct filesystem setup). Standard floppy emulators (SIO2SD) are too slow. If playback glitches: try a freshly formatted FAT16 card and copy AVF files first to keep them contiguous (fragmentation breaks streaming).
     
-2. **Emulator Configuration:** If testing on **Altirra**, you MUST enable **"Use burst I/O transfers"** in the Hard Disk configuration. Without it, the emulator simulates seek times, causing video glitches. It's very likely to glitch-out/loose synchronisation anyway.
+2. **Emulator Configuration:** If testing on **Altirra**, you MUST enable **"Use burst I/O transfers"** in the Hard Disk configuration. Without it, the emulator simulates seek times, causing video glitches. It's very likely to glitch-out/lose synchronisation anyway.
     
 3. **Audio Quality:** The audio is essentially 4-bit software PCM played through the POKEY chip. A high-pitched carrier whine (~15kHz) is normal and part of the technology, not a bug.
     
