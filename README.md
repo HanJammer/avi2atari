@@ -37,15 +37,15 @@ ie.
 
 Open the Command Prompt, then:
 
-'''
-winget install Python.Python.3.10
-winget install ffmpeg
-winget install Git.Git
-git clone https://github.com/HanJammer/avi2atari.git
-cd avi2atari
-python -m pip install -r requirements.txt
-python avi2atari.py
-'''
+    ```
+    winget install Python.Python.3.10
+    winget install ffmpeg
+    winget install Git.Git
+    git clone https://github.com/HanJammer/avi2atari.git
+    cd avi2atari
+    python -m pip install -r requirements.txt
+    python avi2atari.py
+    ```
 
 ### The right way:
 
