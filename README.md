@@ -45,7 +45,7 @@ Open the Command Prompt, then:
     python -m pip install -r requirements.txt
     python avi2atari.py
 
-### The right way:
+### The regular (recommended) way:
 
 Install prerequisities:
 **Python 3.8+** (Python 3.10 recommended)
