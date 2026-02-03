@@ -48,7 +48,9 @@ Open the Command Prompt, then:
 ### The regular (recommended) way:
 
 Install prerequisities:
+
 **Python 3.8+** (Python 3.10 recommended)
+
 **FFmpeg**: You must have FFmpeg installed and added to your system's PATH.
  - _Windows:_ Download from [ffmpeg.org](https://ffmpeg.org/) (official site) or [gyan.dev](https://www.gyan.dev/ffmpeg/builds/#release-builds) (prebuilt binaries with codecs included), extract, and add the `bin` folder to your System Environment Variables (PATH).
  - _Linux:_ ie. `apt install ffmpeg`
