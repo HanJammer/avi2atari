@@ -37,7 +37,6 @@ ie.
 
 Open the Command Prompt, then:
 
-    ```
     winget install Python.Python.3.10
     winget install ffmpeg
     winget install Git.Git
@@ -45,7 +44,6 @@ Open the Command Prompt, then:
     cd avi2atari
     python -m pip install -r requirements.txt
     python avi2atari.py
-    ```
 
 ### The right way:
 
