@@ -33,14 +33,29 @@ ie.
 
 ## Installation
 
-### Prerequisites
+### The easy way (If you are Windows user and not sure what to do):
 
-1. **Python 3.8+** (Python 3.10 recommended)
-2. **FFmpeg**: You must have FFmpeg installed and added to your system's PATH.
-    - _Windows:_ Download from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), extract, and add the `bin` folder to your System Environment Variables (PATH).
-    - _Linux:_ ie. `apt install ffmpeg`
+Open the Command Prompt, then:
 
-### Setup
+'''
+winget install Python.Python.3.10
+winget install ffmpeg
+winget install Git.Git
+git clone https://github.com/HanJammer/avi2atari.git
+cd avi2atari
+python -m pip install -r requirements.txt
+python avi2atari.py
+'''
+
+### The right way:
+
+Install prerequisities:
+**Python 3.8+** (Python 3.10 recommended)
+**FFmpeg**: You must have FFmpeg installed and added to your system's PATH.
+ - _Windows:_ Download from [ffmpeg.org](https://ffmpeg.org/), extract, and add the `bin` folder to your System Environment Variables (PATH).
+ - _Linux:_ ie. `apt install ffmpeg`
+
+Then:
 
 1. **Clone the repository:**
     
