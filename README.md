@@ -35,7 +35,7 @@ ie.
 
 ### Prerequisites
 
-1. **Python 3.8+**
+1. **Python 3.8+** (Python 3.10 recommended)
 2. **FFmpeg**: You must have FFmpeg installed and added to your system's PATH.
     - _Windows:_ Download from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), extract, and add the `bin` folder to your System Environment Variables (PATH).
     - _Linux:_ ie. `apt install ffmpeg`
@@ -160,7 +160,9 @@ Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0
 
 ## Limitations & Hardware Notes
 
-1. **Storage Speed:** Playing AVF video requires a data transfer rate of approx. **8.7 KB/frame** (over 430 KB/s). This requires fast storage solutions like **Sub Cart**, **SIDE3**, or **AVG Cart**. Standard floppy emulators (SIO2SD) are too slow.
+I tested the output files extensively on my Atari 130XE with SUB Cart (yet to be tested on my 800XL).
+
+1. **Storage Speed:** Playing AVF video requires a data transfer rate of approx. **8.7 KB/frame** (over 430 KB/s). This requires fast storage solutions like **SUB Cart** (tested), **AVG Cart** (not tested but should work just like SUB Cart), **SIDE3** (needs testing). Standard floppy emulators (SIO2SD) are too slow.
     
 2. **Emulator Configuration:** If testing on **Altirra**, you MUST enable **"Use burst I/O transfers"** in the Hard Disk configuration. Without it, the emulator simulates seek times, causing video glitches. It's very likely to glitch-out/loose synchronisation anyway.
     
