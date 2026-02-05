@@ -47,6 +47,8 @@ Open the Command Prompt, then:
 
 **YouTube instructions:**
 
+[Rusty Bits - avi2atari - a modern converter for 8-bit Atari AVF files](https://www.youtube.com/watch?v=e5cW2JG56zw)
+
 [![YouTube instruction](https://img.youtube.com/vi/e5cW2JG56zw/0.jpg)](https://www.youtube.com/watch?v=e5cW2JG56zw)
 
 ### The regular (recommended) way:
