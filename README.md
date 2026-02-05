@@ -45,6 +45,8 @@ Open the Command Prompt, then:
     python -m pip install -r requirements.txt
     python avi2atari.py --test-gen --system PAL
 
+**YouTube instructions:**
+
 [![YouTube instruction](https://img.youtube.com/vi/e5cW2JG56zw/0.jpg)](https://www.youtube.com/watch?v=e5cW2JG56zw)
 
 ### The regular (recommended) way:
