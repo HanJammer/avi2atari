@@ -172,7 +172,7 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 
 ### Parameter Comparison
 
-Be advised that below picture was generated using 130XE with faulty GTIA - I will replace them soon.
+Be advised that below pictures were generated using 130XE with faulty GTIA - I will replace them soon.
 
 **Saturation vs Contrast matrix**
 
