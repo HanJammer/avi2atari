@@ -163,8 +163,7 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--system`     | Target system: `PAL`, `NTSC`, or `BOTH` (generates two files). Default: `BOTH`.                                                                                                                       |
 | `--out`        | Custom output filename (ignored in batch mode).                                                                                                                                                       |
 | `--loudnorm`   | **Recommended.** Enables EBU R128 loudness normalization. Ensures consistent volume without distortion.                                                                                               |
-| `--urllist`   | Takes text file with list of the URLs as an input (described above).                                      
-
+| `--urllist`   | Takes text file with list of the URLs as an input (described above).                                                                                                                                   |
 | `--volume`     | Manual volume gain in dB (e.g., `10`). Use only if loudnorm is disabled. Default: `12.0`.                                                                                                             |
 | `--saturation` | Color saturation boost. `1.0` is original. Try `1.3` - `1.5` for vivid colors.                                                                                                                        |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
