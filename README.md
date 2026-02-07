@@ -28,6 +28,8 @@ ie.
 - **Dual System Support:** Generates correct frame structures for both **PAL (50Hz)** and **NTSC (60Hz)** systems.
     
 - **Batch Processing:** Point it to a directory, and it will convert your entire library automatically.
+  
+- **Use URL as input:** Program supports URLs as input so you can process online videos (including YouTube) directly.
     
 - **Structure Integrity:** Includes automated checks to ensure the output file has byte-perfect alignment required by the Atari player hardware.
 
@@ -112,6 +114,25 @@ Convert all videos in a specific folder:
 python avi2atari.py D:\MyVideos\ --system PAL
 ```
 
+### URL as input
+
+Convert online video:
+
+```
+python avi2atari.py https://some.online/video.mp4
+```
+
+### URL list as input
+
+Convert online videos you specified in the file. File format is: one URL per line and optional output file name (tab-separated).
+URL<tab>OutputFileName
+URL2
+URL3<tab>SomeotherFileName
+
+```
+python avi2atari.py --urllist onlinevideos.txt
+```
+
 ### The "Golden Standard" (Recommended)
 
 Use loudness normalization and slightly boost saturation for better visuals on CRT screens:
@@ -145,6 +166,8 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 | `--system`     | Target system: `PAL`, `NTSC`, or `BOTH` (generates two files). Default: `BOTH`.                                                                                                                       |
 | `--out`        | Custom output filename (ignored in batch mode).                                                                                                                                                       |
 | `--loudnorm`   | **Recommended.** Enables EBU R128 loudness normalization. Ensures consistent volume without distortion.                                                                                               |
+| `--urllist`   | Takes text file with list of the URLs as an input (described above).                                      
+
 | `--volume`     | Manual volume gain in dB (e.g., `10`). Use only if loudnorm is disabled. Default: `12.0`.                                                                                                             |
 | `--saturation` | Color saturation boost. `1.0` is original. Try `1.3` - `1.5` for vivid colors.                                                                                                                        |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
@@ -152,6 +175,8 @@ usage: avi2atari.py [-h] [--test-gen] [--system {PAL,NTSC,BOTH}] [--out OUT]
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 
 ### Parameter Comparison
+
+Be advised that below picture was generated using 130XE with failed GTIA - I will replace them soon.
 
 **Saturation vs Contrast matrix**
 
