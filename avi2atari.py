@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 
 # avi2atari.py - Atari 8-bit AVF Video Converter
-# Copyright (C) 2025 HanJammer & Lumen
+# Copyright (C) 2026 HanJammer & Lumen
 #
 # A modern, all-in-one converter for AVF/BIN format on Atari 8-bit computers.
 # Supports both PAL (50Hz) and NTSC (60Hz) output standards.
 # 
 # Key Features:
+# - Single file processing
 # - Batch processing (directory support)
+# - URL support (YouTube and direct video links) via yt-dlp
+# - URL List processing via text file (--urllist filename.txt)
+# - Downloads are saved to 'downloads/' folder and preserved
 # - EBU R128 Audio Loudness Normalization (prevents silence or clipping on 8-bit DACs)
 # - Error diffusion dithering (Floyd-Steinberg derivative)
 # - Strict file structure integrity checks (prevents sync drift)
+# - Auto-generation of silence for video-only inputs
 # - Built-in test signal generator
 # 
 # Original Concept: phaeron encvideo/encaudio/mux C++ sources)
-#
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,9 +39,17 @@ import subprocess
 import argparse
 import glob
 import time
+import shutil
 import numpy as np
 import math
 from numba import jit
+
+# Try importing yt_dlp for URL support
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    YT_DLP_AVAILABLE = False
 
 # --- AVF FORMAT CONFIGURATION ---
 # Target resolution used by the player (scaled via Display List interrupts)
@@ -302,6 +314,43 @@ def mux_frame(fout, vbuf, abuf, is_pal):
     fout.write(bytes([abuf[51]]))
     fout.write(b'\x00')
 
+# --- DOWNLOADER UTILS ---
+def download_media(url):
+    # Downloads video from URL using yt-dlp.
+    # Saves to 'downloads' directory.
+    # Returns the path to the downloaded file and the video title.
+    if not YT_DLP_AVAILABLE:
+        print("ERROR: yt-dlp is not installed. Please install it with: pip install yt-dlp")
+        sys.exit(1)
+
+    print(f"--- Downloading from URL: {url} ---")
+    
+    # Ensure downloads directory exists
+    download_dir = os.path.join(os.getcwd(), "downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    
+    # Configure yt-dlp to download to 'downloads' folder with clean filename
+    # %(title)s.%(ext)s - uses video title
+    ydl_opts = {
+        'format': 'best',
+        'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+        'quiet': False,
+        'no_warnings': True,
+        'restrictfilenames': True, # ASCII only filenames
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            title = info.get('title', 'video')
+            # Sanitize title for output usage
+            sanitized_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
+            return filename, sanitized_title
+        except Exception as e:
+            print(f"Error downloading URL: {e}")
+            return None, None
+
 # --- MAIN PROCESSING LOGIC ---
 def process_single_file(input_file, system, output_file, config):
     print(f"\n>>> Converting: {input_file} -> {output_file}")
@@ -312,13 +361,11 @@ def process_single_file(input_file, system, output_file, config):
     audio_chunk_size = 312 if is_pal else 262
 
     # Using temporary files instead of pipes for stability.
-    # Prevents "dropped bytes" due to OS buffer underruns during heavy CPU load.
     pid = os.getpid()
     temp_vid = f"temp_v_{pid}.raw"
     temp_aud = f"temp_a_{pid}.raw"
     
     # --- 1. FFMPEG FILTERS ---
-    # Video Filters: Scale + Saturation + Contrast
     vf_chain = f"scale=160:192:flags=lanczos,eq=saturation={config['saturation']}:contrast={config['contrast']},fps={fps},format=yuv420p"
     
     # Audio Filters: Loudnorm (EBU R128) or Manual Gain
@@ -343,18 +390,26 @@ def process_single_file(input_file, system, output_file, config):
         ], check=True)
 
         # Dump Audio (Forced PCM Unsigned 8-bit)
-        print(f"    [2/3] Extracting Audio...")        
-        subprocess.run([
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
-            '-i', input_file,
-            '-vn',
-            '-af', af_chain,
-            '-ar', audio_rate,
-            '-ac', '1',
-            '-c:a', 'pcm_u8',
-            '-f', 'u8', 
-            temp_aud
-        ], check=True)
+        # Added TRY/EXCEPT to handle video-only files
+        print(f"    [2/3] Extracting Audio...")
+        use_dummy_audio = False
+        try:
+            subprocess.run([
+                'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+                '-i', input_file,
+                '-vn',
+                '-af', af_chain,
+                '-ar', audio_rate,
+                '-ac', '1',
+                '-c:a', 'pcm_u8',
+                '-f', 'u8', 
+                temp_aud
+            ], check=True)
+        except subprocess.CalledProcessError:
+            print("    WARNING: No audio stream detected (or extraction failed).")
+            print("             Generating digital silence for compatibility.")
+            use_dummy_audio = True
+
     except subprocess.CalledProcessError as e:
         print(f"Error during FFmpeg extraction: {e}")
         return
@@ -375,7 +430,11 @@ def process_single_file(input_file, system, output_file, config):
     errfy = np.zeros((HEIGHT, 80), dtype=np.float32)
 
     f_vid = open(temp_vid, "rb")
-    f_aud = open(temp_aud, "rb")
+    
+    # Open audio file only if it exists, otherwise we'll generate silence in loop
+    f_aud = None
+    if not use_dummy_audio:
+        f_aud = open(temp_aud, "rb")
     
     frame_count = 0
     start_time = time.time()
@@ -388,9 +447,15 @@ def process_single_file(input_file, system, output_file, config):
             u_data = f_vid.read(80 * 96)
             v_data = f_vid.read(80 * 96)
             
-            a_data = f_aud.read(audio_chunk_size)
+            # Read audio chunk or generate silence
+            if not use_dummy_audio:
+                a_data = f_aud.read(audio_chunk_size)
+            else:
+                a_data = b'' # Will be padded below
+
             if len(a_data) < audio_chunk_size:
                 # Padding with silence (128 = silence in Unsigned 8-bit)
+                # This handles both end-of-file and dummy-audio scenarios
                 a_data += b'\x80' * (audio_chunk_size - len(a_data))
 
             y_plane = np.frombuffer(y_data, dtype=np.uint8).reshape((192, 160))
@@ -405,7 +470,7 @@ def process_single_file(input_file, system, output_file, config):
 
             # --- INTEGRITY CHECK ---
             # Verifies if the file size matches the expected byte count exactly.
-            # If not, aborts immediately to prevent generating a corrupted file.
+            # If not, aborts immediately to prevent generating a corrupted file.            
             current_pos = fout.tell()
             header_offset = (16 * 512) if not config['no_header'] else 0
             expected_pos = header_offset + (frame_count + 1) * FRAME_SIZE_BYTES
@@ -422,11 +487,14 @@ def process_single_file(input_file, system, output_file, config):
         print("\nAborted.")
     finally:
         f_vid.close()
-        f_aud.close()
+        if f_aud: f_aud.close()
         fout.close()
+        
         # Clean up temporary files
         if os.path.exists(temp_vid): os.remove(temp_vid)
         if os.path.exists(temp_aud): os.remove(temp_aud)
+        
+        # NOTE: We do NOT remove the input file (even if downloaded), as per new requirements.
     
     print(f"\n    Done. Saved to {output_file}")
 
@@ -448,14 +516,14 @@ def generate_test_file(filename):
 def main():
     parser = argparse.ArgumentParser(description="Atari 8-bit AVF Converter")
     
-    # Operation Modes
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("input", nargs='?', help="Input video file or directory")
-    group.add_argument("--test-gen", action="store_true", help="Generate and convert a test signal (test_tone.mp4)")
+    # Input Options
+    parser.add_argument("input", nargs='?', help="Input file, directory, or URL")
+    parser.add_argument("--test-gen", action="store_true", help="Generate and convert a test signal")
+    parser.add_argument("--urllist", action="store_true", help="Treat input argument as a text file containing URLs")
 
     # System Options
     parser.add_argument("--system", choices=['PAL', 'NTSC', 'BOTH'], default='BOTH', help="Target TV system")
-    parser.add_argument("--out", help="Output filename (ignored in directory mode)")
+    parser.add_argument("--out", help="Output filename (ignored in batch/list mode)")
     parser.add_argument("--no-header", action="store_true", help="Disable 8KB header (not recommended!)")
 
     # Image Options
@@ -468,6 +536,11 @@ def main():
     audio_group.add_argument("--loudnorm", action="store_true", help="Use EBU R128 loudness normalization (Recommended)")
 
     args = parser.parse_args()
+
+    # If no arguments provided (and not test-gen), print help and exit
+    if not args.input and not args.test_gen:
+        parser.print_help()
+        sys.exit(1)
 
     # Config dictionary
     config = {
@@ -482,37 +555,77 @@ def main():
     if args.test_gen:
         test_file = "test_tone.mp4"
         generate_test_file(test_file)
-        # Auto-convert
         if args.system in ['BOTH', 'PAL']:
             process_single_file(test_file, 'PAL', "test_tone-PAL.avf", config)
         if args.system in ['BOTH', 'NTSC']:
             process_single_file(test_file, 'NTSC', "test_tone-NTSC.avf", config)
         return
 
-    # MODE 2: Batch / Single File
-    input_path = args.input
+    # Determine input type
+    input_arg = args.input
     
-    if os.path.isdir(input_path):
-        # Batch Mode
-        files = glob.glob(os.path.join(input_path, "*.mp4")) + \
-                glob.glob(os.path.join(input_path, "*.mkv")) + \
-                glob.glob(os.path.join(input_path, "*.avi"))
+    # MODE 2: URL List File
+    if args.urllist:
+        if not os.path.exists(input_arg):
+            print(f"ERROR: URL list file '{input_arg}' not found.")
+            return
         
-        print(f"--- Batch Mode: Found {len(files)} video files in '{input_path}' ---")
+        print(f"--- Processing URL List: {input_arg} ---")
+        with open(input_arg, 'r', encoding='utf-8') as f:
+            lines = [l.strip() for l in f if l.strip()]
+        
+        for line in lines:
+            parts = line.split('\t')
+            url = parts[0]
+            custom_name = parts[1] if len(parts) > 1 else None
+            
+            dl_path, title = download_media(url)
+            if dl_path:
+                base_name = custom_name if custom_name else title
+                if args.system in ['BOTH', 'PAL']:
+                    process_single_file(dl_path, 'PAL', f"{base_name}-PAL.avf", config)
+                if args.system in ['BOTH', 'NTSC']:
+                    process_single_file(dl_path, 'NTSC', f"{base_name}-NTSC.avf", config)
+        return
+
+    # MODE 3: Direct URL (YouTube or File)
+    if input_arg.startswith("http://") or input_arg.startswith("https://"):
+        dl_path, title = download_media(input_arg)
+        if dl_path:
+            base_name = args.out if args.out else title
+            if args.system in ['BOTH', 'PAL']:
+                process_single_file(dl_path, 'PAL', f"{base_name}-PAL.avf", config)
+            if args.system in ['BOTH', 'NTSC']:
+                process_single_file(dl_path, 'NTSC', f"{base_name}-NTSC.avf", config)
+        return
+
+    # MODE 4: Directory Batch
+    if os.path.isdir(input_arg):
+        # Expanded extension list for batch processing
+        extensions = ['*.mp4', '*.mkv', '*.avi', '*.flv', '*.webm', '*.wmv', '*.mov', '*.mpg', '*.mpeg', '*.m4v']
+        files = []
+        for ext in extensions:
+            files.extend(glob.glob(os.path.join(input_arg, ext)))
+        
+        print(f"--- Batch Mode: Found {len(files)} video files in '{input_arg}' ---")
         
         for f in files:
             base = os.path.splitext(os.path.basename(f))[0]
             if args.system in ['BOTH', 'PAL']:
-                process_single_file(f, 'PAL', os.path.join(input_path, f"{base}-PAL.avf"), config)
+                process_single_file(f, 'PAL', os.path.join(input_arg, f"{base}-PAL.avf"), config)
             if args.system in ['BOTH', 'NTSC']:
-                process_single_file(f, 'NTSC', os.path.join(input_path, f"{base}-NTSC.avf"), config)
-    else:
-        # Single File Mode
-        base = args.out if args.out else os.path.splitext(os.path.basename(input_path))[0]
+                process_single_file(f, 'NTSC', os.path.join(input_arg, f"{base}-NTSC.avf"), config)
+        return
+
+    # MODE 5: Single Local File
+    if os.path.exists(input_arg):
+        base = args.out if args.out else os.path.splitext(os.path.basename(input_arg))[0]
         if args.system in ['BOTH', 'PAL']:
-            process_single_file(input_path, 'PAL', f"{base}-PAL.avf", config)
+            process_single_file(input_arg, 'PAL', f"{base}-PAL.avf", config)
         if args.system in ['BOTH', 'NTSC']:
-            process_single_file(input_path, 'NTSC', f"{base}-NTSC.avf", config)
+            process_single_file(input_arg, 'NTSC', f"{base}-NTSC.avf", config)
+    else:
+        print(f"ERROR: Input '{input_arg}' not found.")
 
 if __name__ == "__main__":
     main()
