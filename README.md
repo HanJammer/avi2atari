@@ -138,7 +138,7 @@ python avi2atari.py --urllist onlinevideos.txt
 Use loudness normalization and slightly boost saturation for better visuals on CRT screens:
 
 ```
-python avi2atari.py matrix.mp4 --system PAL --loudnorm --saturation 1.3
+python avi2atari.py matrix.mp4 --system PAL --loudnorm
 ```
 
 ### Generate Test Signal
@@ -165,18 +165,16 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--loudnorm`   | **Recommended.** Enables EBU R128 loudness normalization. Ensures consistent volume without distortion.                                                                                               |
 | `--urllist`    | Takes text file with list of the URLs as an input (described above).                                                                                                                                  |
 | `--volume`     | Manual volume gain in dB (e.g., `10`). Use only if loudnorm is disabled. Default: `12.0`.                                                                                                             |
-| `--saturation` | Color saturation boost. `1.0` is original. Try `1.3` - `1.5` for vivid colors.                                                                                                                        |
+| `--saturation` | Color saturation. `1.0` is original. Works best for de-saturation - values over 1.0 have minimal to no effect. Use 0.0 for monochrome video.                                                          |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 
 ### Parameter Comparison
 
-Be advised that below pictures were generated using 130XE with faulty GTIA - I will replace them soon.
-
 **Saturation vs Contrast matrix**
 
-![Saturation vs Contrast matrix](images/contrast-vs-saturation.png)
+![Saturation vs Contrast matrix](images/contrast-vs-saturation_1.png)
 
 ### Output examples
 
@@ -184,15 +182,15 @@ Be advised that below pictures were generated using 130XE with faulty GTIA - I w
 
 Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0Gm0vs/view?usp=sharing) [NTSC](https://drive.google.com/file/d/1UhUVOQMtQdMp4kDoz1Lhlnayg7lL8b0n/view?usp=sharing)
 
-| **Sample 1**                                | **Sample 2**                                |
-| --------------------------------------------| ------------------------------------------- |
-| ![DAUBLG Example 1](images/daublg-avf1.png) | ![DAUBLG Example 2](images/daublg-avf2.png) |
+| **Sample 1**                                  | **Sample 2**                                  |
+| ----------------------------------------------| --------------------------------------------- |
+| ![DAUBLG Example 1](images/daublg-avf1_1.png) | ![DAUBLG Example 2](images/daublg-avf2_1.png) |
 
 **Topo & Roby "Under the Ice" (Live)** ([source video](https://www.youtube.com/watch?v=iR7pwtqyZio)).
 
-| **Sample 1**                                        | **Sample 2**                                        |
-| ----------------------------------------------------| --------------------------------------------------- |
-| ![Topo & Roby Example 1](images/topo-roby-avf1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2.png) |
+| **Sample 1**                                          | **Sample 2**                                          |
+| ------------------------------------------------------| ----------------------------------------------------- |
+| ![Topo & Roby Example 1](images/topo-roby-avf1_1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2_1.png) |
 
 ---
 
