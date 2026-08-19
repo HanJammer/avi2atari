@@ -31,7 +31,7 @@ ie.
   
 - **Use URL as input:** Program supports URLs as input so you can process online videos (including YouTube) directly.
     
-- **Structure Integrity:** Includes automated checks to ensure the output file has byte-perfect alignment required by the Atari player hardware.
+- **Structure Integrity:** Includes automated checks to ensure the output file has byte-perfect alignment required by the Atari player hardware. A standalone validator (`avf_check.py`) can re-verify any finished `.avf` file without booting an emulator.
 
 ## Installation
 
@@ -138,7 +138,7 @@ python avi2atari.py --urllist onlinevideos.txt
 Use loudness normalization and slightly boost saturation for better visuals on CRT screens:
 
 ```
-python avi2atari.py matrix.mp4 --system PAL --loudnorm
+python avi2atari.py matrix.mp4 --system PAL --loudnorm --saturation 1.3
 ```
 
 ### Generate Test Signal
@@ -149,12 +149,42 @@ Create a synthesized test file (SMPTE bars + 440Hz tone) to verify your hardware
 python avi2atari.py --test-gen --system PAL
 ```
 
+### Validate a finished AVF file
+
+`avf_check.py` is a standalone structural validator. It reads a finished `.avf`
+file and confirms that its binary layout matches exactly what `movplay`/`AVFplay`
+expect on the Atari - **without** booting an emulator or real hardware. Use it as a
+fast regression check after tweaking encoder settings, or to confirm a file
+survived copying/transfer intact.
+
+It checks:
+
+- the optional 8 KB header is present and fully zeroed,
+- the payload length is an exact multiple of the 8704-byte frame size,
+- the fixed padding bytes inside every video block are zero,
+- the audio-block tail padding matches the target system (PAL/NTSC differ here).
+
+```
+# Validate a PAL file produced with the default 8KB header:
+python avf_check.py video-PAL.avf --system PAL
+
+# NTSC file:
+python avf_check.py video-NTSC.avf --system NTSC
+
+# A file produced with --no-header:
+python avf_check.py raw.avf --no-header --system PAL
+```
+
+It prints a short report and exits `0` on success or `1` on the first structural
+problem it finds (handy in scripts/CI). `--system` defaults to `PAL`; it only
+affects the audio tail-padding pattern, so pass the correct one for NTSC files.
+
 ---
 
 ## Parameters
 
 ```
-usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--saturation SATURATION] [--contrast CONTRAST] [--volume VOLUME | --loudnorm] [input]
+usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--saturation SATURATION] [--contrast CONTRAST] [--aspect {stretch,fit}] [--volume VOLUME | --loudnorm] [input]
 ```
 
 | **Parameter**  | **Description**                                                                                                                                                                                       |
@@ -165,8 +195,9 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--loudnorm`   | **Recommended.** Enables EBU R128 loudness normalization. Ensures consistent volume without distortion.                                                                                               |
 | `--urllist`    | Takes text file with list of the URLs as an input (described above).                                                                                                                                  |
 | `--volume`     | Manual volume gain in dB (e.g., `10`). Use only if loudnorm is disabled. Default: `12.0`.                                                                                                             |
-| `--saturation` | Color saturation. `1.0` is original. Works best for de-saturation - values over 1.0 have minimal to no effect. Use 0.0 for monochrome video.                                                          |
+| `--saturation` | Color saturation. `1.0` is original. Values above `1.0` boost color (e.g. `1.5` is a visible boost, good for washed-out sources on a CRT); `0.0` gives monochrome video.                                |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
+| `--aspect`     | How to fit the source into 160x192: `stretch` (default, fills the frame - legacy behaviour) or `fit` (preserves the source aspect ratio and adds black bars). Use `fit` for 16:9 content to avoid squashing. |
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 

@@ -5,7 +5,7 @@
 #
 # A modern, all-in-one converter for AVF/BIN format on Atari 8-bit computers.
 # Supports both PAL (50Hz) and NTSC (60Hz) output standards.
-# 
+#
 # Key Features:
 # - Single file processing
 # - Batch processing (directory support)
@@ -17,7 +17,7 @@
 # - Strict file structure integrity checks (prevents sync drift)
 # - Auto-generation of silence for video-only inputs
 # - Built-in test signal generator
-# 
+#
 # Original Concept: phaeron encvideo/encaudio/mux C++ sources)
 #
 # This program is free software: you can redistribute it and/or modify
@@ -71,7 +71,7 @@ QTAB_NTSC = np.zeros(16, dtype=np.float32)
 
 def init_tables():
     # Generates lookup tables for color conversion (Phase Shift).
-    # PAL: 14 color cycles    
+    # PAL: 14 color cycles
     for i in range(15):
         ITAB_PAL[i+1] = 40.0 * math.cos(3.1415926535 * (float(i) + 0.5) / 7.0)
         QTAB_PAL[i+1] = 40.0 * math.sin(3.1415926535 * (float(i) + 0.5) / 7.0)
@@ -87,7 +87,7 @@ init_tables()
 def encode_audio_chunk(audio_data):
     # Converts raw audio (8-bit Unsigned) to Atari POKEY format (4-bit PWM-ish).
     # Mapping: PC 0..255 -> Atari 0..100.
-    # Uses simple linear scaling consistent with the original C++ encoder.    
+    # Uses simple linear scaling consistent with the original C++ encoder.
     out = np.zeros(len(audio_data), dtype=np.uint8)
     for i in range(len(audio_data)):
         val = int(audio_data[i])
@@ -104,9 +104,9 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
     # 1. YUV -> Atari I/Q conversion (Phase/Amplitude)
     # 2. GTIA palette matching (16 hues / 16 luma levels)
     # 3. Dithering (Error diffusion)
-    # 4. Bit packing (2 pixels per byte)  
+    # 4. Bit packing (2 pixels per byte)
     output = np.zeros((HEIGHT, 40), dtype=np.uint8)
-    
+
     # Local error buffers for dithering (reset per frame/line logic)
     perr = np.zeros(82, dtype=np.int32)
     nerr = np.zeros(82, dtype=np.int32)
@@ -114,14 +114,14 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
     ncerr = np.zeros(82, dtype=np.float32)
     pserr = np.zeros(82, dtype=np.float32)
     nserr = np.zeros(82, dtype=np.float32)
-    
+
     ITAB = ITAB_PAL if is_pal else ITAB_NTSC
     QTAB = QTAB_PAL if is_pal else QTAB_NTSC
 
     for y in range(HEIGHT):
         # Atari in AVF mode interleaves Chroma (Color) and Luma (Brightness) lines.
         # PAL: Even=Chroma, Odd=Luma
-        # NTSC: Odd=Chroma, Even=Luma (due to different signal structure)        
+        # NTSC: Odd=Chroma, Even=Luma (due to different signal structure)
         is_chroma = (y % 2 == 0) if is_pal else (y % 2 != 0)
 
         if is_chroma:
@@ -131,9 +131,13 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
             # Serpentine scanning (left-to-right, then right-to-left) reduces dither artifacts
             direction = -1 if (y & 2) else 1
             start_x = 0 if direction == 1 else 79
+            # In-line err*7 propagates to the NEXT pixel in scan order; that pixel
+            # reads perr[x_next + 1] = perr[x +/- 1 + 1]. So the write offset
+            # depends on direction: +2 going right, 0 going left.
+            fwd_off = 2 if direction == 1 else 0
             chroma_y = y // 2
             accum = 0
-            
+
             for i in range(80):
                 x = start_x + (i * direction)
                 u_val = int(u_plane[chroma_y, x]) - 128
@@ -155,7 +159,7 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
                 fq = (0.211*red - 0.522*grn + 0.311*blu) + pserr[x + 1] / 25.0 + errfq[y, x]
 
                 satsq = fi*fi + fq*fq
-                
+
                 # Phase calculation (Hue)
                 if is_pal:
                     rawhue = math.atan2(fq, fi) * (7.0 / 3.1415926535) - 0.5
@@ -184,12 +188,12 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
                 errfi[y, x] = ierror * 0.36
                 errfq[y, x] = qerror * 0.36
 
-                pcerr[x + 2] += ierror * 7.0
+                pcerr[x + fwd_off] += ierror * 7.0
                 ncerr[81 - x] += ierror * 3.0
                 ncerr[80 - x] += ierror * 5.0
                 ncerr[79 - x] += ierror
 
-                pserr[x + 2] += qerror * 7.0
+                pserr[x + fwd_off] += qerror * 7.0
                 nserr[81 - x] += qerror * 3.0
                 nserr[80 - x] += qerror * 5.0
                 nserr[79 - x] += qerror
@@ -202,7 +206,7 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
 
                 if (i % 2) == 1:
                     output[y, x // 2] = accum
-            
+
             pcerr[:] = ncerr
             pserr[:] = nserr
 
@@ -211,50 +215,52 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
             nerr[:] = 0
             direction = -1 if (y & 2) else 1
             start_x = 0 if direction == 1 else 79
+            # See note in chroma branch: err*7 must follow scan direction.
+            fwd_off = 2 if direction == 1 else 0
             accum = 0
-            
+
             for i in range(80):
                 x = start_x + (i * direction)
                 base_x = x * 2
-                
+
                 # Luma sampling (2x2 averaging for stability)
                 p0 = int(y_plane[y, base_x])
                 p1 = int(y_plane[y, base_x + 1])
                 y_next = y + 1 if y + 1 < HEIGHT else y
                 p2 = int(y_plane[y_next, base_x])
                 p3 = int(y_plane[y_next, base_x + 1])
-                
+
                 # Scale YUV range (16-235) to full range (0-255)
                 val_a = (((p0 + p1 + p2 + p3 - 64) * 255 + 438) // 876)
-                
+
                 diff = (perr[x + 1] + errfy[y, x]) / 25.0
                 val_a += int(diff)
-                
+
                 if val_a < 0: val_a = 0
                 if val_a > 255: val_a = 255
-                
+
                 # Quantize to 16 brightness levels (4-bit)
                 val_b = int((val_a + 8) // 17)
                 if val_b < 0: val_b = 0
                 if val_b > 15: val_b = 15
-                
+
                 val_c = val_b * 17
                 err = val_a - val_c
-                
+
                 errfy[y, x] = float(err * 9)
-                perr[x + 2] += int(err * 7)
+                perr[x + fwd_off] += int(err * 7)
                 nerr[81 - x] += int(err * 3)
                 nerr[80 - x] += int(err * 5)
                 nerr[79 - x] += int(err)
-                
+
                 if direction < 0:
                     accum = (accum >> 4) + (val_b << 4)
                 else:
                     accum = (accum << 4) + val_b
-                
+
                 if (i % 2) == 1:
                     output[y, x // 2] = accum
-            
+
             temp = perr
             perr = nerr
             nerr = temp
@@ -267,24 +273,24 @@ def mux_frame(fout, vbuf, abuf, is_pal):
     # The format is rigid - 8704 bytes per frame.
     # Video is split into blocks of 3 lines, interleaved with audio data.
     v_flat = vbuf.flatten()
-    
+
     # 1. VIDEO PART (Video Blocks)
     # Video: 192 lines / 3 = 64 blocks.
     # Each video block is padded with zeroes.
     for y in range(0, 192, 3):
-        fout.write(b'\x00') 
+        fout.write(b'\x00')
         fout.write(v_flat[y*40 : (y+1)*40])
         fout.write(b'\x00\x00\x00')
         fout.write(b'\x00')
         fout.write(v_flat[(y+1)*40 : (y+2)*40])
         fout.write(b'\x00\x00\x00')
         fout.write(v_flat[(y+2)*40 : (y+3)*40])
-    
+
     # 2. AUDIO PART (Audio Blocks at the end of the frame)
     # Audio data is "smeared" in a specific pattern so the CPU can read it in time.
     off1 = 120 if is_pal else 70
     off2 = 52
-    
+
     # Audio Loop 1 (32 audio lines)
     for y in range(32):
         fout.write(bytes([abuf[y]]))
@@ -324,11 +330,11 @@ def download_media(url):
         sys.exit(1)
 
     print(f"--- Downloading from URL: {url} ---")
-    
+
     # Ensure downloads directory exists
     download_dir = os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_dir, exist_ok=True)
-    
+
     # Configure yt-dlp to download to 'downloads' folder with clean filename
     # %(title)s.%(ext)s - uses video title
     ydl_opts = {
@@ -354,7 +360,7 @@ def download_media(url):
 # --- MAIN PROCESSING LOGIC ---
 def process_single_file(input_file, system, output_file, config):
     print(f"\n>>> Converting: {input_file} -> {output_file}")
-    
+
     is_pal = (system == "PAL")
     fps = "49.86" if is_pal else "59.92"
     audio_rate = "15557" if is_pal else "15700" # Sample rates consistent with VirtualDub
@@ -364,10 +370,38 @@ def process_single_file(input_file, system, output_file, config):
     pid = os.getpid()
     temp_vid = f"temp_v_{pid}.raw"
     temp_aud = f"temp_a_{pid}.raw"
-    
+
     # --- 1. FFMPEG FILTERS ---
-    vf_chain = f"scale=160:192:flags=lanczos,eq=saturation={config['saturation']}:contrast={config['contrast']},fps={fps},format=yuv420p"
-    
+    # Force the output colour matrix to BT.601 ("smpte170m"). The downstream
+    # YUV->I/Q conversion in encode_video_frame is hard-coded to BT.601
+    # coefficients; modern HD content is usually tagged BT.709 and would yield
+    # subtly off greens/skin tones if fed through unconverted. Letting libswscale
+    # do the matrix conversion during the scale stage costs nothing extra.
+    common_scale_opts = "flags=lanczos:in_color_matrix=auto:out_color_matrix=bt601"
+    if config['aspect'] == 'fit':
+        # Preserve source aspect ratio, pad with black to 160x192 (letter/pillarbox).
+        # Note: assumes square pixels for the source; ignores Atari's non-square
+        # pixel aspect on a CRT (a known compromise - acceptable on modern displays).
+        scale_filter = (
+            f"scale=160:192:force_original_aspect_ratio=decrease:{common_scale_opts},"
+            f"pad=160:192:(ow-iw)/2:(oh-ih)/2:black"
+        )
+    else:
+        # Stretch (legacy behaviour): fill the frame regardless of source AR.
+        scale_filter = f"scale=160:192:{common_scale_opts}"
+
+    # Saturation is applied via the `hue` filter rather than `eq=saturation=`,
+    # because `eq` saturates very weakly above 1.0 (clamp/curve in libavfilter)
+    # while `hue=s=` scales chroma linearly - so values like 1.5 actually do
+    # something visible. Contrast still goes through `eq` (no equivalent in `hue`).
+    # Both filters are no-ops at 1.0, so default behaviour is preserved.
+    vf_chain = (
+        f"{scale_filter},"
+        f"eq=contrast={config['contrast']},"
+        f"hue=s={config['saturation']},"
+        f"fps={fps},format=yuv420p"
+    )
+
     # Audio Filters: Loudnorm (EBU R128) or Manual Gain
     if config['loudnorm']:
         # EBU R128 normalization
@@ -402,7 +436,7 @@ def process_single_file(input_file, system, output_file, config):
                 '-ar', audio_rate,
                 '-ac', '1',
                 '-c:a', 'pcm_u8',
-                '-f', 'u8', 
+                '-f', 'u8',
                 temp_aud
             ], check=True)
         except subprocess.CalledProcessError:
@@ -416,9 +450,9 @@ def process_single_file(input_file, system, output_file, config):
 
     # --- 3. ENCODING & MUXING ---
     print(f"    [3/3] Encoding & Muxing...")
-    
+
     fout = open(output_file, "wb")
-    
+
     # The 8KB header is enabled by default. It is required for correct synchronization
     # by the "movplay" player, which always skips the first 16 sectors (regardless of media).
     if not config['no_header']:
@@ -430,23 +464,23 @@ def process_single_file(input_file, system, output_file, config):
     errfy = np.zeros((HEIGHT, 80), dtype=np.float32)
 
     f_vid = open(temp_vid, "rb")
-    
+
     # Open audio file only if it exists, otherwise we'll generate silence in loop
     f_aud = None
     if not use_dummy_audio:
         f_aud = open(temp_aud, "rb")
-    
+
     frame_count = 0
     start_time = time.time()
-    
+
     try:
         while True:
             y_data = f_vid.read(160 * 192)
-            if len(y_data) != 30720: break 
-            
+            if len(y_data) != 30720: break
+
             u_data = f_vid.read(80 * 96)
             v_data = f_vid.read(80 * 96)
-            
+
             # Read audio chunk or generate silence
             if not use_dummy_audio:
                 a_data = f_aud.read(audio_chunk_size)
@@ -470,12 +504,19 @@ def process_single_file(input_file, system, output_file, config):
 
             # --- INTEGRITY CHECK ---
             # Verifies if the file size matches the expected byte count exactly.
-            # If not, aborts immediately to prevent generating a corrupted file.            
+            # If not, aborts immediately to prevent generating a corrupted file.
+            # Uses an explicit raise rather than assert so that running with
+            # python -O does not silently disable the safety net.
             current_pos = fout.tell()
             header_offset = (16 * 512) if not config['no_header'] else 0
             expected_pos = header_offset + (frame_count + 1) * FRAME_SIZE_BYTES
-            
-            assert current_pos == expected_pos, f"CRITICAL ERROR at Frame {frame_count}. Byte size mismatch!"
+
+            if current_pos != expected_pos:
+                raise RuntimeError(
+                    f"CRITICAL: byte size mismatch at frame {frame_count} "
+                    f"(got {current_pos}, expected {expected_pos}). "
+                    f"AVF stream is misaligned and would desync on hardware."
+                )
 
             frame_count += 1
             if frame_count % 100 == 0:
@@ -489,13 +530,13 @@ def process_single_file(input_file, system, output_file, config):
         f_vid.close()
         if f_aud: f_aud.close()
         fout.close()
-        
+
         # Clean up temporary files
         if os.path.exists(temp_vid): os.remove(temp_vid)
         if os.path.exists(temp_aud): os.remove(temp_aud)
-        
+
         # NOTE: We do NOT remove the input file (even if downloaded), as per new requirements.
-    
+
     print(f"\n    Done. Saved to {output_file}")
 
 
@@ -515,7 +556,7 @@ def generate_test_file(filename):
 
 def main():
     parser = argparse.ArgumentParser(description="Atari 8-bit AVF Converter")
-    
+
     # Input Options
     parser.add_argument("input", nargs='?', help="Input file, directory, or URL")
     parser.add_argument("--test-gen", action="store_true", help="Generate and convert a test signal")
@@ -529,6 +570,10 @@ def main():
     # Image Options
     parser.add_argument("--saturation", type=float, default=1.0, help="Color saturation boost (default: 1.0)")
     parser.add_argument("--contrast", type=float, default=1.0, help="Contrast adjustment (default: 1.0)")
+    parser.add_argument("--aspect", choices=['stretch', 'fit'], default='stretch',
+                        help="How to fit source into 160x192: 'stretch' (legacy default, "
+                             "fills the frame) or 'fit' (preserves source aspect ratio with "
+                             "black bars). Use 'fit' for 16:9 content to avoid squashing.")
 
     # Audio Options
     audio_group = parser.add_mutually_exclusive_group()
@@ -547,6 +592,7 @@ def main():
         'no_header': args.no_header,
         'saturation': args.saturation,
         'contrast': args.contrast,
+        'aspect': args.aspect,
         'volume': args.volume,
         'loudnorm': args.loudnorm
     }
@@ -563,22 +609,22 @@ def main():
 
     # Determine input type
     input_arg = args.input
-    
+
     # MODE 2: URL List File
     if args.urllist:
         if not os.path.exists(input_arg):
             print(f"ERROR: URL list file '{input_arg}' not found.")
             return
-        
+
         print(f"--- Processing URL List: {input_arg} ---")
         with open(input_arg, 'r', encoding='utf-8') as f:
             lines = [l.strip() for l in f if l.strip()]
-        
+
         for line in lines:
             parts = line.split('\t')
             url = parts[0]
             custom_name = parts[1] if len(parts) > 1 else None
-            
+
             dl_path, title = download_media(url)
             if dl_path:
                 base_name = custom_name if custom_name else title
@@ -606,9 +652,9 @@ def main():
         files = []
         for ext in extensions:
             files.extend(glob.glob(os.path.join(input_arg, ext)))
-        
+
         print(f"--- Batch Mode: Found {len(files)} video files in '{input_arg}' ---")
-        
+
         for f in files:
             base = os.path.splitext(os.path.basename(f))[0]
             if args.system in ['BOTH', 'PAL']:
