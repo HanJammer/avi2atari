@@ -44,6 +44,8 @@ import numpy as np
 import math
 from numba import jit
 
+__version__ = "0.3"
+
 # Try importing yt_dlp for URL support
 try:
     import yt_dlp
@@ -131,13 +133,18 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
             # Serpentine scanning (left-to-right, then right-to-left) reduces dither artifacts
             direction = -1 if (y & 2) else 1
             start_x = 0 if direction == 1 else 79
-            # In-line err*7 propagates to the NEXT pixel in scan order; that pixel
-            # reads perr[x_next + 1] = perr[x +/- 1 + 1]. So the write offset
-            # depends on direction: +2 going right, 0 going left.
-            fwd_off = 2 if direction == 1 else 0
             chroma_y = y // 2
             accum = 0
 
+            # IMPORTANT - two distinct index spaces are in play here:
+            #   i = scan index  (0..79, always advances in scan order)
+            #   x = screen column (i counted from the left or the right)
+            # The error buffers are indexed by SCAN index, never by column. That is
+            # what makes the mirrored write pattern below correct: because the next
+            # line is scanned in the opposite direction, "the pixel below" is at
+            # scan index 79-i there, so 80-i is where its weight-5 share must land.
+            # Indexing these buffers by column instead silently diffuses every
+            # line's error onto the horizontally mirrored part of the next line.
             for i in range(80):
                 x = start_x + (i * direction)
                 u_val = int(u_plane[chroma_y, x]) - 128
@@ -155,8 +162,8 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
                     grn = -0.342 * fu - 0.711 * fv
                     blu = 1.765 * fu
 
-                fi = (0.595*red - 0.274*grn - 0.321*blu) + pcerr[x + 1] / 25.0 + errfi[y, x]
-                fq = (0.211*red - 0.522*grn + 0.311*blu) + pserr[x + 1] / 25.0 + errfq[y, x]
+                fi = (0.595*red - 0.274*grn - 0.321*blu) + pcerr[i + 1] / 25.0 + errfi[y, x]
+                fq = (0.211*red - 0.522*grn + 0.311*blu) + pserr[i + 1] / 25.0 + errfq[y, x]
 
                 satsq = fi*fi + fq*fq
 
@@ -184,25 +191,29 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
                 ierror = fi - ITAB[out_color]
                 qerror = fq - QTAB[out_color]
 
-                # Error propagation to next pixels and lines (Floyd-Steinberg variant)
+                # Error propagation to next pixels and lines (Floyd-Steinberg variant).
+                # errf* is the TEMPORAL term (9/25 of the error carried to the same
+                # pixel in the next frame), so it is keyed by column - a given line
+                # always scans the same way, so column and scan index stay in step
+                # from frame to frame either way.
                 errfi[y, x] = ierror * 0.36
                 errfq[y, x] = qerror * 0.36
 
-                pcerr[x + fwd_off] += ierror * 7.0
-                ncerr[81 - x] += ierror * 3.0
-                ncerr[80 - x] += ierror * 5.0
-                ncerr[79 - x] += ierror
+                pcerr[i + 2] += ierror * 7.0
+                ncerr[81 - i] += ierror * 3.0
+                ncerr[80 - i] += ierror * 5.0
+                ncerr[79 - i] += ierror
 
-                pserr[x + fwd_off] += qerror * 7.0
-                nserr[81 - x] += qerror * 3.0
-                nserr[80 - x] += qerror * 5.0
-                nserr[79 - x] += qerror
+                pserr[i + 2] += qerror * 7.0
+                nserr[81 - i] += qerror * 3.0
+                nserr[80 - i] += qerror * 5.0
+                nserr[79 - i] += qerror
 
                 # Packing 4-bit nibbles into a byte
                 if direction < 0:
-                    accum = (accum >> 4) + (out_color << 4)
+                    accum = ((accum >> 4) + (out_color << 4)) & 0xFF
                 else:
-                    accum = (accum << 4) + out_color
+                    accum = ((accum << 4) + out_color) & 0xFF
 
                 if (i % 2) == 1:
                     output[y, x // 2] = accum
@@ -215,25 +226,36 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
             nerr[:] = 0
             direction = -1 if (y & 2) else 1
             start_x = 0 if direction == 1 else 79
-            # See note in chroma branch: err*7 must follow scan direction.
-            fwd_off = 2 if direction == 1 else 0
             accum = 0
 
+            # Luma/chroma registration. Output line pair number n is carried by the
+            # chroma line at 2n and the luma line at 2n+1 (PAL) or by the luma line
+            # at 2n and the chroma line at 2n+1 (NTSC). The 4:2:0 chroma plane row n
+            # covers source rows 2n and 2n+1, so the luma line must average that
+            # SAME row pair or the two planes drift apart by one source line.
+            # PAL luma rows are odd, so they have to look one row back.
+            base_y = (y - 1) if is_pal else y
+            if base_y < 0:
+                base_y = 0
+            if base_y > HEIGHT - 2:
+                base_y = HEIGHT - 2
+
+            # See the note in the chroma branch: error buffers use the SCAN index i,
+            # pixel and output access use the screen column x.
             for i in range(80):
                 x = start_x + (i * direction)
                 base_x = x * 2
 
                 # Luma sampling (2x2 averaging for stability)
-                p0 = int(y_plane[y, base_x])
-                p1 = int(y_plane[y, base_x + 1])
-                y_next = y + 1 if y + 1 < HEIGHT else y
-                p2 = int(y_plane[y_next, base_x])
-                p3 = int(y_plane[y_next, base_x + 1])
+                p0 = int(y_plane[base_y, base_x])
+                p1 = int(y_plane[base_y, base_x + 1])
+                p2 = int(y_plane[base_y + 1, base_x])
+                p3 = int(y_plane[base_y + 1, base_x + 1])
 
                 # Scale YUV range (16-235) to full range (0-255)
                 val_a = (((p0 + p1 + p2 + p3 - 64) * 255 + 438) // 876)
 
-                diff = (perr[x + 1] + errfy[y, x]) / 25.0
+                diff = (perr[i + 1] + errfy[y, x]) / 25.0
                 val_a += int(diff)
 
                 if val_a < 0: val_a = 0
@@ -248,15 +270,15 @@ def encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal):
                 err = val_a - val_c
 
                 errfy[y, x] = float(err * 9)
-                perr[x + fwd_off] += int(err * 7)
-                nerr[81 - x] += int(err * 3)
-                nerr[80 - x] += int(err * 5)
-                nerr[79 - x] += int(err)
+                perr[i + 2] += int(err * 7)
+                nerr[81 - i] += int(err * 3)
+                nerr[80 - i] += int(err * 5)
+                nerr[79 - i] += int(err)
 
                 if direction < 0:
-                    accum = (accum >> 4) + (val_b << 4)
+                    accum = ((accum >> 4) + (val_b << 4)) & 0xFF
                 else:
-                    accum = (accum << 4) + val_b
+                    accum = ((accum << 4) + val_b) & 0xFF
 
                 if (i % 2) == 1:
                     output[y, x // 2] = accum
@@ -564,7 +586,9 @@ def main():
 
     # System Options
     parser.add_argument("--system", choices=['PAL', 'NTSC', 'BOTH'], default='BOTH', help="Target TV system")
-    parser.add_argument("--out", help="Output filename (ignored in batch/list mode)")
+    parser.add_argument("--out", help="Output base name; '-PAL.avf'/'-NTSC.avf' is appended "
+                                      "(ignored in batch/list mode)")
+    parser.add_argument("--version", action="version", version=f"avi2atari {__version__}")
     parser.add_argument("--no-header", action="store_true", help="Disable 8KB header (not recommended!)")
 
     # Image Options
@@ -585,6 +609,13 @@ def main():
     # If no arguments provided (and not test-gen), print help and exit
     if not args.input and not args.test_gen:
         parser.print_help()
+        sys.exit(1)
+
+    # Every mode shells out to FFmpeg, so fail here with a useful message rather
+    # than a bare FileNotFoundError traceback from the first subprocess call.
+    if shutil.which('ffmpeg') is None:
+        print("ERROR: 'ffmpeg' was not found on your PATH.")
+        print("       Install it and make sure the 'bin' folder is on PATH - see the README.")
         sys.exit(1)
 
     # Config dictionary

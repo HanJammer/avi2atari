@@ -36,6 +36,8 @@ import sys
 import os
 import argparse
 
+__version__ = "0.3"
+
 FRAME_SIZE = 8704
 HEADER_SIZE = 16 * 512  # 8192
 
@@ -107,9 +109,7 @@ def check_audio_block_padding(frame, frame_idx, is_pal):
         if errors and "loop2" in errors[-1]:
             break
 
-    # Trailing 2 bytes: data byte then 0x00.
-    if frame[audio_base + 510] != 0 and False:
-        pass  # data byte, can be anything
+    # Trailing 2 bytes: a data byte (any value) followed by 0x00.
     if frame[audio_base + 511] != 0:
         errors.append(
             f"frame {frame_idx}, audio trailing byte at offset {audio_base + 511}: expected 0x00"
@@ -175,6 +175,7 @@ def main():
                     help="File was produced with --no-header (skip header check)")
     ap.add_argument("--system", choices=["PAL", "NTSC"], default="PAL",
                     help="Target system (affects loop2 padding pattern). Default: PAL")
+    ap.add_argument("--version", action="version", version=f"avf_check {__version__}")
     args = ap.parse_args()
 
     if not os.path.exists(args.file):
