@@ -149,6 +149,23 @@ Create a synthesized test file (SMPTE bars + 440Hz tone) to verify your hardware
 python avi2atari.py --test-gen --system PAL
 ```
 
+### AVF2 metadata header
+
+`--avf2` writes an ID3-like metadata block (title, author, converter, date,
+duration and a full-resolution poster frame) into the 8KB header region that
+every existing player skips unconditionally - so AVF2 files remain **100%
+playable** by movplay/AVFPLAY and all other AVF v1 consumers:
+
+```
+python avi2atari.py matrix.mp4 --system PAL --loudnorm --avf2 --title "The Matrix (1999)" --author "HanJammer"
+```
+
+The poster frame is taken at 10% of the source duration by default; use
+`--poster SECONDS` to pick a different moment. Without `--title` the source
+filename is used. `avf_check.py` validates and prints the metadata;
+[avfplayer](https://github.com/HanJammer/avfplayer) can display it
+(`--info`, `--poster`).
+
 ### Validate a finished AVF file
 
 `avf_check.py` is a standalone structural validator. It reads a finished `.avf`
@@ -159,7 +176,9 @@ survived copying/transfer intact.
 
 It checks:
 
-- the optional 8 KB header is present and fully zeroed,
+- the optional 8 KB header is present and either fully zeroed (AVF v1) or a
+  valid AVF2 metadata block (magic, checksum, system and frame count are
+  cross-checked against the actual payload; metadata is printed),
 - the payload length is an exact multiple of the 8704-byte frame size,
 - the fixed padding bytes inside every video block are zero,
 - the audio-block tail padding matches the target system (PAL/NTSC differ here).
@@ -198,6 +217,11 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--saturation` | Color saturation. `1.0` is original. Values above `1.0` boost color (e.g. `1.5` is a visible boost, good for washed-out sources on a CRT); `0.0` gives monochrome video.                                |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
 | `--aspect`     | How to fit the source into 160x192: `stretch` (default, fills the frame - legacy behaviour) or `fit` (preserves the source aspect ratio and adds black bars). Use `fit` for 16:9 content to avoid squashing. |
+| `--avf2`       | Write the AVF2 metadata header (backward compatible - see above).                                                                                                                                      |
+| `--title`      | AVF2: video title (ASCII, max 64 chars). Default: source filename.                                                                                                                                     |
+| `--author`     | AVF2: author of the conversion (ASCII, max 64 chars).                                                                                                                                                  |
+| `--comment`    | AVF2: free-text comment (ASCII, max 128 chars).                                                                                                                                                        |
+| `--poster`     | AVF2: source timestamp (seconds) of the poster frame. Default: 10% of duration.                                                                                                                        |
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 

@@ -36,10 +36,66 @@ import sys
 import os
 import argparse
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 FRAME_SIZE = 8704
 HEADER_SIZE = 16 * 512  # 8192
+
+
+def parse_avf2_header(buf):
+    """Parse an AVF2 metadata sector. Returns (meta dict, problems list).
+
+    Returns (None, []) if the header is not AVF2 at all (plain v1 zero
+    header expected instead). Layout: docs/AVF2_HEADER.md.
+    """
+    if len(buf) < HEADER_SIZE or buf[0:4] != b"AVF2":
+        return None, []
+
+    problems = []
+    s0 = buf[:512]
+
+    checksum_stored = int.from_bytes(s0[510:512], "little")
+    checksum_actual = sum(s0[0:510]) & 0xFFFF
+    if checksum_stored != checksum_actual:
+        problems.append(
+            f"AVF2 checksum mismatch (stored 0x{checksum_stored:04x}, "
+            f"computed 0x{checksum_actual:04x})"
+        )
+
+    version = s0[4]
+    if version < 1:
+        problems.append(f"AVF2 header_version is {version}, expected >= 1")
+    if s0[5] not in (0, 1):
+        problems.append(f"AVF2 system byte is {s0[5]}, expected 0 (PAL) or 1 (NTSC)")
+
+    def text(lo, hi):
+        # Printable ASCII only; anything else becomes '?'. Keeps the report
+        # safe to print on any console codepage even for corrupted headers.
+        raw = s0[lo:hi].rstrip(b"\x00")
+        return "".join(chr(b) if 0x20 <= b <= 0x7E else "?" for b in raw)
+
+    meta = {
+        "version": version,
+        "system": "PAL" if s0[5] == 0 else "NTSC",
+        "poster": bool(s0[6] & 1),
+        "frame_count": int.from_bytes(s0[8:12], "little"),
+        "duration_ms": int.from_bytes(s0[12:16], "little"),
+        "date": text(16, 24),
+        "title": text(64, 128),
+        "author": text(128, 192),
+        "converter": text(192, 224),
+        "comment": text(224, 352),
+    }
+
+    # If no poster is flagged, sectors 1-15 must be zero.
+    if not meta["poster"]:
+        nz = sum(1 for b in buf[512:HEADER_SIZE] if b != 0)
+        if nz:
+            problems.append(
+                f"AVF2 poster flag is 0 but poster area has {nz} non-zero bytes"
+            )
+
+    return meta, problems
 
 
 def check_header(buf):
@@ -127,8 +183,14 @@ def validate(path, has_header, system):
 
     problems = []
 
+    meta = None
     if has_header:
-        problems += check_header(data)
+        meta, hdr_problems = parse_avf2_header(data)
+        if meta is None:
+            # Plain AVF v1: header must be all zeroes.
+            problems += check_header(data)
+        else:
+            problems += hdr_problems
         payload = data[HEADER_SIZE:]
     else:
         payload = data
@@ -140,6 +202,17 @@ def validate(path, has_header, system):
         )
 
     n_frames = len(payload) // FRAME_SIZE
+
+    # AVF2 cross-checks: the header must agree with reality.
+    if meta is not None:
+        if meta["frame_count"] != n_frames:
+            problems.append(
+                f"AVF2 frame_count is {meta['frame_count']} but payload holds {n_frames} frames"
+            )
+        if meta["system"] != system:
+            problems.append(
+                f"AVF2 header says {meta['system']} but validation was requested for {system}"
+            )
     sample_count = 0
     sample_step = max(1, n_frames // 20)  # sample up to ~20 frames across the file
 
@@ -154,9 +227,23 @@ def validate(path, has_header, system):
 
     print(f"File: {path}")
     print(f"  Size:   {size} bytes")
-    print(f"  Header: {'present (8192 B)' if has_header else 'none'}")
+    if has_header:
+        header_kind = "AVF2 metadata (8192 B)" if meta is not None else "AVF v1, zeroed (8192 B)"
+    else:
+        header_kind = "none"
+    print(f"  Header: {header_kind}")
     print(f"  Frames: {n_frames}  (sampled {sample_count})")
     print(f"  System: {system}")
+    if meta is not None:
+        secs = meta["duration_ms"] / 1000.0
+        print(f"  AVF2:   v{meta['version']}  {meta['system']}  "
+              f"{meta['frame_count']} frames  {secs:.1f}s  "
+              f"poster={'yes' if meta['poster'] else 'no'}  date={meta['date']}")
+        print(f"    Title:     {meta['title']}")
+        print(f"    Author:    {meta['author']}")
+        print(f"    Converter: {meta['converter']}")
+        if meta["comment"]:
+            print(f"    Comment:   {meta['comment']}")
 
     if problems:
         print(f"  RESULT: FAIL ({len(problems)} issue(s))")

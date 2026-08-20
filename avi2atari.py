@@ -44,7 +44,7 @@ import numpy as np
 import math
 from numba import jit
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 # Try importing yt_dlp for URL support
 try:
@@ -62,6 +62,59 @@ WIDTH = 160
 # The player reads data in blocks of 17 sectors (17 * 512 = 8704 bytes).
 # Every byte must be perfectly aligned, otherwise the video will drift or turn into noise.
 FRAME_SIZE_BYTES = 8704
+
+# True seconds per frame on the hardware (312/262 lines of 114 cycles).
+SECONDS_PER_FRAME_PAL = 114.0 * 312.0 / 1773447.5
+SECONDS_PER_FRAME_NTSC = 114.0 * 262.0 / 1789772.5
+
+
+# --- AVF2 METADATA HEADER ---
+# AVF2 = AVF with the 8 KB header populated instead of zeroed. movplay/AVFPLAY
+# skip the first 16 sectors unconditionally, so AVF2 files remain 100%
+# playable by every existing player. Layout: docs/AVF2_HEADER.md.
+def _avf2_text(value, length):
+    # ASCII 0x20-0x7E only, NUL-padded to the fixed field length.
+    raw = (value or "").encode("ascii", errors="replace")
+    raw = bytes(b if 0x20 <= b <= 0x7E else ord("?") for b in raw)
+    return raw[:length].ljust(length, b"\x00")
+
+
+def build_avf2_header(is_pal, frame_count, poster_data, meta):
+    spf = SECONDS_PER_FRAME_PAL if is_pal else SECONDS_PER_FRAME_NTSC
+    duration_ms = int(round(frame_count * spf * 1000.0))
+
+    sector0 = bytearray(512)
+    sector0[0:4] = b"AVF2"
+    sector0[4] = 1                                  # header_version
+    sector0[5] = 0 if is_pal else 1                 # system
+    sector0[6] = 1 if poster_data else 0            # flags: bit0 = poster
+    sector0[8:12] = frame_count.to_bytes(4, "little")
+    sector0[12:16] = duration_ms.to_bytes(4, "little")
+    sector0[16:24] = time.strftime("%Y%m%d").encode("ascii")
+    sector0[64:128] = _avf2_text(meta.get("title"), 64)
+    sector0[128:192] = _avf2_text(meta.get("author"), 64)
+    sector0[192:224] = _avf2_text(f"avi2atari {__version__}", 32)
+    sector0[224:352] = _avf2_text(meta.get("comment"), 128)
+    checksum = sum(sector0[0:510]) & 0xFFFF
+    sector0[510:512] = checksum.to_bytes(2, "little")
+
+    poster = poster_data if poster_data else b"\x00" * 7680
+    if len(poster) != 7680:
+        raise RuntimeError(f"poster frame must be 7680 bytes, got {len(poster)}")
+    return bytes(sector0) + poster
+
+
+def probe_duration_seconds(input_file):
+    # Best-effort media duration via ffprobe (ships with FFmpeg). None on failure.
+    try:
+        out = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'csv=p=0', input_file],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        return float(out)
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return None
 
 # --- PHASE TABLES (Precomputed) ---
 # Atari generates colors via phase shift (Hue) and amplitude (Saturation).
@@ -495,6 +548,26 @@ def process_single_file(input_file, system, output_file, config):
     frame_count = 0
     start_time = time.time()
 
+    # AVF2: pick the poster frame index up front. Explicit --poster wins;
+    # otherwise 10% of the source duration (ffprobe), otherwise 10 s.
+    poster_idx = 0
+    poster_data = None
+    avf2_meta = None
+    if config['avf2']:
+        if config['poster'] is not None:
+            poster_time = config['poster']
+        else:
+            duration = probe_duration_seconds(input_file)
+            poster_time = duration * 0.10 if duration else 10.0
+        poster_idx = max(0, int(round(poster_time * float(fps))))
+        # Per-file metadata; untitled files fall back to the source basename
+        # so batch conversions still produce self-describing AVF2 files.
+        avf2_meta = {
+            'title': config['title'] or os.path.splitext(os.path.basename(input_file))[0],
+            'author': config['author'],
+            'comment': config['comment'],
+        }
+
     try:
         while True:
             y_data = f_vid.read(160 * 192)
@@ -521,6 +594,11 @@ def process_single_file(input_file, system, output_file, config):
 
             encoded_vid = encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal)
             encoded_aud = encode_audio_chunk(a_chunk)
+
+            # AVF2 poster: keep overwriting until the chosen frame is reached,
+            # so a clip shorter than the poster time still gets its last frame.
+            if config['avf2'] and frame_count <= poster_idx:
+                poster_data = encoded_vid.flatten().tobytes()
 
             mux_frame(fout, encoded_vid, encoded_aud, is_pal)
 
@@ -551,6 +629,17 @@ def process_single_file(input_file, system, output_file, config):
     finally:
         f_vid.close()
         if f_aud: f_aud.close()
+
+        # AVF2: patch the metadata header into the (so far zeroed) first
+        # 16 sectors, now that frame_count and the poster are known.
+        if config['avf2'] and frame_count > 0:
+            header = build_avf2_header(is_pal, frame_count, poster_data, avf2_meta)
+            fout.seek(0)
+            fout.write(header)
+            print(f"    AVF2 header: title='{avf2_meta['title']}', "
+                  f"poster frame {min(poster_idx, frame_count - 1)}, "
+                  f"{frame_count} frames")
+
         fout.close()
 
         # Clean up temporary files
@@ -591,6 +680,18 @@ def main():
     parser.add_argument("--version", action="version", version=f"avi2atari {__version__}")
     parser.add_argument("--no-header", action="store_true", help="Disable 8KB header (not recommended!)")
 
+    # AVF2 metadata header (see docs/AVF2_HEADER.md). Fully backward
+    # compatible: existing players skip the header region unconditionally.
+    parser.add_argument("--avf2", action="store_true",
+                        help="Write an AVF2 metadata header (title/author/poster) into the "
+                             "8KB header region. Backward compatible with all players.")
+    parser.add_argument("--title", default=None, help="AVF2: video title (ASCII, max 64 chars)")
+    parser.add_argument("--author", default=None, help="AVF2: author of the conversion (ASCII, max 64 chars)")
+    parser.add_argument("--comment", default=None, help="AVF2: free-text comment (ASCII, max 128 chars)")
+    parser.add_argument("--poster", type=float, default=None, metavar="SECONDS",
+                        help="AVF2: source timestamp of the poster frame "
+                             "(default: 10%% of duration, or 10s if unknown)")
+
     # Image Options
     parser.add_argument("--saturation", type=float, default=1.0, help="Color saturation boost (default: 1.0)")
     parser.add_argument("--contrast", type=float, default=1.0, help="Contrast adjustment (default: 1.0)")
@@ -618,6 +719,10 @@ def main():
         print("       Install it and make sure the 'bin' folder is on PATH - see the README.")
         sys.exit(1)
 
+    if args.avf2 and args.no_header:
+        print("ERROR: --avf2 requires the 8KB header; it cannot be combined with --no-header.")
+        sys.exit(1)
+
     # Config dictionary
     config = {
         'no_header': args.no_header,
@@ -625,7 +730,12 @@ def main():
         'contrast': args.contrast,
         'aspect': args.aspect,
         'volume': args.volume,
-        'loudnorm': args.loudnorm
+        'loudnorm': args.loudnorm,
+        'avf2': args.avf2,
+        'title': args.title,
+        'author': args.author,
+        'comment': args.comment,
+        'poster': args.poster
     }
 
     # MODE 1: Test Generator
