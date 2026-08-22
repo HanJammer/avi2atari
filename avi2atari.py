@@ -54,7 +54,7 @@ except ImportError:
         return _deco
     print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
-__version__ = "0.6"
+__version__ = "0.7"
 
 import avf_format as avf
 
@@ -436,23 +436,40 @@ def download_media(url):
     download_dir = os.path.join(os.getcwd(), "downloads")
     os.makedirs(download_dir, exist_ok=True)
 
-    # Configure yt-dlp to download to 'downloads' folder with clean filename
-    # %(title)s.%(ext)s - uses video title
+    # Prefer a single muxed MP4 and force an mp4 container. Modern YouTube
+    # serves DASH (separate video+audio) whose merged file often does NOT
+    # match prepare_filename()'s guessed extension - the classic "downloaded
+    # but no file" trap. merge_output_format pins it, and we also fall back
+    # to the newest file actually written to the download dir.
     ydl_opts = {
-        'format': 'best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'merge_output_format': 'mp4',
         'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
         'quiet': False,
         'no_warnings': True,
-        'restrictfilenames': True, # ASCII only filenames
+        'restrictfilenames': True,   # ASCII-only filenames
     }
 
+    before = set(os.listdir(download_dir))
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
             title = info.get('title', 'video')
-            # Sanitize title for output usage
-            sanitized_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
+            filename = ydl.prepare_filename(info)
+            if not os.path.exists(filename):
+                # merge/postprocess changed the extension: take the newest
+                # file that appeared in the download dir during this call.
+                fresh = [os.path.join(download_dir, f)
+                         for f in os.listdir(download_dir) if f not in before]
+                cand = fresh or [os.path.join(download_dir, f)
+                                 for f in os.listdir(download_dir)]
+                if not cand:
+                    print("Error downloading URL: no file was written")
+                    return None, None
+                filename = max(cand, key=os.path.getmtime)
+            sanitized_title = "".join(
+                c for c in title
+                if c.isalpha() or c.isdigit() or c in ' .-_').strip()
             return filename, sanitized_title
         except Exception as e:
             print(f"Error downloading URL: {e}")
