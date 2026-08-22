@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""avf_format - shared AVF / AVF2 container primitives for the PC suite.
+
+One home for the format so the converter, checker, player and web app can
+never drift apart again (the profile byte once lived in three near-copies
+of parse_avf2). Pure standard library - numpy stays optional and is only
+needed by the frame decoders in the tools, not here.
+
+Layout reference: avi2atari docs/AVF_FORMAT.md and docs/AVF2_HEADER.md.
+"""
+import time
+
+__version__ = "1.0"
+
+# --- geometry ---------------------------------------------------------------
+WIDTH, HEIGHT = 160, 192          # APAC luma grid
+HEADER_SIZE = 16 * 512            # 8192: the region every player skips
+VIDEO_BYTES = 7680                # picture payload per frame (both profiles)
+FRAME_SIZE_APAC = 8704            # APAC: video + padded/smeared audio mux
+FRAME_SIZE_C80 = 8192             # C80: 7680 raw video + 512 linear audio
+
+# --- video profiles (AVF2 header byte 7) ------------------------------------
+PROFILE_APAC = 0
+PROFILE_C80M3 = 1                 # reserved, not implemented
+PROFILE_C80M4 = 2
+PROFILE_NAMES = {0: "APAC", 1: "C80M3", 2: "C80M4"}
+C80_HALFBLOCK = 0x01             # C80 cell glyph: rows 0-3 BG, rows 4-7 FG
+
+# --- TV systems (AVF2 header byte 5) ----------------------------------------
+SYSTEM_NAMES = {0: "PAL", 1: "NTSC"}
+# Exact frame periods (POKEY line rate * lines / colour clock).
+SECONDS_PER_FRAME_PAL = 114.0 * 312.0 / 1773447.5
+SECONDS_PER_FRAME_NTSC = 114.0 * 262.0 / 1789772.5
+FPS_PAL = 1.0 / SECONDS_PER_FRAME_PAL      # ~49.86
+FPS_NTSC = 1.0 / SECONDS_PER_FRAME_NTSC    # ~59.92
+
+# --- APAC audio mux parameters (used by the player/checker demux) -----------
+AUDIO_CHUNK_PAL = 312
+AUDIO_CHUNK_NTSC = 262
+AUDIO_OFF1_PAL = 120
+AUDIO_OFF1_NTSC = 70
+AUDIO_OFF2 = 52
+
+
+def frame_size(profile):
+    """Bytes per muxed frame for a video profile."""
+    return FRAME_SIZE_C80 if profile in (PROFILE_C80M3, PROFILE_C80M4) \
+        else FRAME_SIZE_APAC
+
+
+def is_c80(profile):
+    return profile in (PROFILE_C80M3, PROFILE_C80M4)
+
+
+def seconds_per_frame(is_pal):
+    return SECONDS_PER_FRAME_PAL if is_pal else SECONDS_PER_FRAME_NTSC
+
+
+def checksum(sector0):
+    """AVF2 sector-0 checksum: 16-bit sum of bytes 0..509."""
+    return sum(sector0[0:510]) & 0xFFFF
+
+
+def _avf2_text(value, length):
+    """Fixed-width NUL-padded ASCII field; non-ASCII dropped."""
+    raw = (value or "").encode("ascii", "ignore")[:length]
+    return raw + b"\x00" * (length - len(raw))
+
+
+def build_avf2_header(is_pal, frame_count, poster_data, meta,
+                      profile=PROFILE_APAC):
+    """Build the 8192-byte AVF2 header (sector 0 + 7680-byte poster).
+
+    meta: dict with optional title/author/comment. poster_data: 7680 bytes
+    or None. profile: PROFILE_* (poster is flagged as profile-encoded when
+    non-APAC).
+    """
+    spf = seconds_per_frame(is_pal)
+    duration_ms = int(round(frame_count * spf * 1000.0))
+    meta = meta or {}
+
+    s0 = bytearray(512)
+    s0[0:4] = b"AVF2"
+    s0[4] = 1                                       # header_version
+    s0[5] = 0 if is_pal else 1                      # system
+    flags = 1 if poster_data else 0                 # bit0 = poster present
+    if poster_data and profile != PROFILE_APAC:
+        flags |= 2                                  # bit1 = poster in-profile
+    s0[6] = flags
+    s0[7] = profile                                 # video profile
+    s0[8:12] = int(frame_count).to_bytes(4, "little")
+    s0[12:16] = int(duration_ms).to_bytes(4, "little")
+    s0[16:24] = time.strftime("%Y%m%d").encode("ascii")
+    s0[64:128] = _avf2_text(meta.get("title"), 64)
+    s0[128:192] = _avf2_text(meta.get("author"), 64)
+    s0[192:224] = _avf2_text(meta.get("converter")
+                             or f"avi2atari {meta.get('_conv_ver', '')}".strip(),
+                             32)
+    s0[224:352] = _avf2_text(meta.get("comment"), 128)
+    s0[510:512] = checksum(s0).to_bytes(2, "little")
+
+    poster = poster_data if poster_data else b"\x00" * VIDEO_BYTES
+    if len(poster) != VIDEO_BYTES:
+        raise ValueError(f"poster must be {VIDEO_BYTES} bytes, got {len(poster)}")
+    return bytes(s0) + poster
+
+
+def _text(s0, lo, hi):
+    raw = bytes(s0[lo:hi]).rstrip(b"\x00")
+    return "".join(chr(b) if 0x20 <= b <= 0x7E else "?" for b in raw)
+
+
+def parse_avf2_header(buf):
+    """Parse an AVF2 header. Returns (meta dict, problems list).
+
+    (None, []) when the buffer is not AVF2 (a plain Legacy/v1 zero header
+    is expected instead). meta carries everything a caller needs, including
+    'profile'/'profile_name', 'poster', 'poster_c80', 'checksum_ok'.
+    """
+    if len(buf) < HEADER_SIZE or buf[0:4] != b"AVF2":
+        return None, []
+
+    problems = []
+    s0 = buf[:512]
+
+    stored = int.from_bytes(s0[510:512], "little")
+    actual = checksum(s0)
+    checksum_ok = (stored == actual)
+    if not checksum_ok:
+        problems.append(f"AVF2 checksum mismatch (stored 0x{stored:04x}, "
+                        f"computed 0x{actual:04x})")
+
+    version = s0[4]
+    if version < 1:
+        problems.append(f"AVF2 header_version is {version}, expected >= 1")
+    if s0[5] not in (0, 1):
+        problems.append(f"AVF2 system byte is {s0[5]}, expected 0/1")
+
+    profile = s0[7]
+    if profile not in PROFILE_NAMES:
+        problems.append(f"AVF2 profile byte is {profile}, expected 0/1/2")
+    if (s0[6] & 2) and profile == PROFILE_APAC:
+        problems.append("AVF2 flags bit1 (profile-encoded poster) set on "
+                        "an APAC file")
+
+    meta = {
+        "version": version,
+        "system": SYSTEM_NAMES.get(s0[5], f"?{s0[5]}"),
+        "is_pal": s0[5] == 0,
+        "poster": bool(s0[6] & 1),
+        "poster_c80": bool(s0[6] & 2),
+        "profile": profile,
+        "profile_name": PROFILE_NAMES.get(profile, f"?{profile}"),
+        "frame_count": int.from_bytes(s0[8:12], "little"),
+        "duration_ms": int.from_bytes(s0[12:16], "little"),
+        "date": _text(s0, 16, 24),
+        "title": _text(s0, 64, 128),
+        "author": _text(s0, 128, 192),
+        "converter": _text(s0, 192, 224),
+        "comment": _text(s0, 224, 352),
+        "checksum_ok": checksum_ok,
+    }
+
+    if not meta["poster"]:
+        nz = sum(1 for b in buf[512:HEADER_SIZE] if b != 0)
+        if nz:
+            problems.append(f"AVF2 poster flag is 0 but poster area has "
+                            f"{nz} non-zero bytes")
+
+    return meta, problems
+
+
+def poster_from_header(buf, meta):
+    """The 7680-byte poster if the header flags one, else None."""
+    if meta and meta.get("poster") and len(buf) >= HEADER_SIZE:
+        return buf[512:HEADER_SIZE]
+    return None

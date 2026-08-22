@@ -36,77 +36,15 @@ import sys
 import os
 import argparse
 
+import avf_format as avf
+
 __version__ = "0.6"
 
-FRAME_SIZE = 8704
-HEADER_SIZE = 16 * 512  # 8192
+FRAME_SIZE = avf.FRAME_SIZE_APAC
+HEADER_SIZE = avf.HEADER_SIZE
 
 
-def parse_avf2_header(buf):
-    """Parse an AVF2 metadata sector. Returns (meta dict, problems list).
-
-    Returns (None, []) if the header is not AVF2 at all (plain v1 zero
-    header expected instead). Layout: docs/AVF2_HEADER.md.
-    """
-    if len(buf) < HEADER_SIZE or buf[0:4] != b"AVF2":
-        return None, []
-
-    problems = []
-    s0 = buf[:512]
-
-    checksum_stored = int.from_bytes(s0[510:512], "little")
-    checksum_actual = sum(s0[0:510]) & 0xFFFF
-    if checksum_stored != checksum_actual:
-        problems.append(
-            f"AVF2 checksum mismatch (stored 0x{checksum_stored:04x}, "
-            f"computed 0x{checksum_actual:04x})"
-        )
-
-    version = s0[4]
-    if version < 1:
-        problems.append(f"AVF2 header_version is {version}, expected >= 1")
-    if s0[5] not in (0, 1):
-        problems.append(f"AVF2 system byte is {s0[5]}, expected 0 (PAL) or 1 (NTSC)")
-
-    def text(lo, hi):
-        # Printable ASCII only; anything else becomes '?'. Keeps the report
-        # safe to print on any console codepage even for corrupted headers.
-        raw = s0[lo:hi].rstrip(b"\x00")
-        return "".join(chr(b) if 0x20 <= b <= 0x7E else "?" for b in raw)
-
-    profile = s0[7]
-    profile_names = {0: "APAC", 1: "C80M3", 2: "C80M4"}
-    if profile not in profile_names:
-        problems.append(f"AVF2 profile byte is {profile}, expected 0 (APAC), "
-                        f"1 (C80M3) or 2 (C80M4)")
-    if (s0[6] & 2) and profile == 0:
-        problems.append("AVF2 flags bit1 (profile-encoded poster) set on an "
-                        "APAC-profile file")
-
-    meta = {
-        "version": version,
-        "system": "PAL" if s0[5] == 0 else "NTSC",
-        "poster": bool(s0[6] & 1),
-        "poster_c80": bool(s0[6] & 2),
-        "profile": profile_names.get(profile, f"unknown({profile})"),
-        "frame_count": int.from_bytes(s0[8:12], "little"),
-        "duration_ms": int.from_bytes(s0[12:16], "little"),
-        "date": text(16, 24),
-        "title": text(64, 128),
-        "author": text(128, 192),
-        "converter": text(192, 224),
-        "comment": text(224, 352),
-    }
-
-    # If no poster is flagged, sectors 1-15 must be zero.
-    if not meta["poster"]:
-        nz = sum(1 for b in buf[512:HEADER_SIZE] if b != 0)
-        if nz:
-            problems.append(
-                f"AVF2 poster flag is 0 but poster area has {nz} non-zero bytes"
-            )
-
-    return meta, problems
+parse_avf2_header = avf.parse_avf2_header
 
 
 def check_header(buf):
@@ -208,7 +146,7 @@ def validate(path, has_header, system):
 
     # C80 profiles use 8192-byte frames (7680 raw video + 512 linear
     # audio, no pads); APAC keeps the classic 8704-byte mux.
-    c80 = bool(meta) and meta.get("profile", "APAC").startswith("C80")
+    c80 = bool(meta) and avf.is_c80(meta["profile"])
     frame_size = 8192 if c80 else FRAME_SIZE
 
     if len(payload) % frame_size != 0:
@@ -257,7 +195,7 @@ def validate(path, has_header, system):
         print(f"  AVF2:   v{meta['version']}  {meta['system']}  "
               f"{meta['frame_count']} frames  {secs:.1f}s  "
               f"poster={'yes' if meta['poster'] else 'no'}  date={meta['date']}")
-        print(f"    Profile:   {meta['profile']}"
+        print(f"    Profile:   {meta['profile_name']}"
               + ("  (poster in profile encoding)" if meta['poster_c80'] else ""))
         print(f"    Title:     {meta['title']}")
         print(f"    Author:    {meta['author']}")

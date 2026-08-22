@@ -33,6 +33,26 @@ ie.
     
 - **Structure Integrity:** Includes automated checks to ensure the output file has byte-perfect alignment required by the Atari player hardware. A standalone validator (`avf_check.py`) can re-verify any finished `.avf` file without booting an emulator.
 
+## The PC-side AVF suite
+
+avi2atari is now the home of a small **AVF/AVF2 tool suite**, tied
+together by one shared format library (`avf_format.py`) so the converter,
+validator and player can never disagree about the container layout:
+
+| Tool | Command | Role |
+|------|---------|------|
+| converter | `avf convert <video> [opts]` | video -> AVF/AVF2 (this tool) |
+| validator | `avf check <file.avf>` | verify the binary layout, no emulator needed |
+| player | `avf play <file.avf>` | play in a desktop window (needs pygame) |
+| metadata | `avf meta <file.avf>` | print AVF2 metadata (no pygame needed) |
+
+`avf.py` is an umbrella CLI over the four; each still runs standalone
+(`python avi2atari.py ...`, `python avf_check.py ...`,
+`python avfplayer.py ...`). The **AVF2** metadata format is the
+recommended default; a plain headerless AVF v1 stream is referred to as
+**Legacy**. Both APAC and the true-colour **AVF-C80** (GTIA2RGB COL80
+Mode 4) profiles are understood across the whole suite.
+
 ## Installation
 
 ### The easy way (If you are Windows user and not sure what to do):

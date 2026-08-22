@@ -1,3 +1,6 @@
 .venv/
 refs/
 docs/
+*.mp4
+*.avf
+__pycache__/

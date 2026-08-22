@@ -56,6 +56,8 @@ except ImportError:
 
 __version__ = "0.6"
 
+import avf_format as avf
+
 # Try importing yt_dlp for URL support
 try:
     import yt_dlp
@@ -64,73 +66,26 @@ except ImportError:
     YT_DLP_AVAILABLE = False
 
 # --- AVF FORMAT CONFIGURATION ---
-# Target resolution used by the player (scaled via Display List interrupts)
-HEIGHT = 192
-WIDTH = 160
-
-# Frame size in bytes on disk.
-# The player reads data in blocks of 17 sectors (17 * 512 = 8704 bytes).
-# Every byte must be perfectly aligned, otherwise the video will drift or turn into noise.
-FRAME_SIZE_BYTES = 8704
-
-# --- AVF-C80 (GTIA2RGB COL80 Mode 4) profile ---
-# C80 frames are SIMPLER than APAC: the display kernel needs no pads
-# (ANTIC fetches clean 40-byte mode-F lines) and no audio smearing (the
-# CPU is idle during the picture and bulk-reads audio in the vertical
-# blank). Frame = 7680 B video + 512 B linear audio = 8192 B.
-# Video: 24 cell rows x [chars 80 | R 80 | G 80 | B 80]; every cell is
-# the half-block glyph (top half = BG nibble, bottom half = FG nibble,
-# AcidMaker's img2atari convention), so each cell shows 2 vertical pixels
-# -> 80x48 true-colour RGB444. Header byte 7 carries the profile id.
-C80_FRAME_SIZE = 8192
-PROFILE_APAC  = 0
-PROFILE_C80M3 = 1        # reserved
-PROFILE_C80M4 = 2
-C80_HALFBLOCK = 0x01     # glyph: rows 0-3 = $00 (BG), rows 4-7 = $FF (FG)
-
-# True seconds per frame on the hardware (312/262 lines of 114 cycles).
-SECONDS_PER_FRAME_PAL = 114.0 * 312.0 / 1773447.5
-SECONDS_PER_FRAME_NTSC = 114.0 * 262.0 / 1789772.5
+# All container constants now live in avf_format (the shared PC-suite lib);
+# these are aliases so the converter body reads the same as before.
+HEIGHT = avf.HEIGHT
+WIDTH = avf.WIDTH
+FRAME_SIZE_BYTES = avf.FRAME_SIZE_APAC   # 17 sectors; byte-aligned or it drifts
+C80_FRAME_SIZE = avf.FRAME_SIZE_C80      # 7680 video + 512 linear audio
+PROFILE_APAC = avf.PROFILE_APAC
+PROFILE_C80M3 = avf.PROFILE_C80M3
+PROFILE_C80M4 = avf.PROFILE_C80M4
+C80_HALFBLOCK = avf.C80_HALFBLOCK
+SECONDS_PER_FRAME_PAL = avf.SECONDS_PER_FRAME_PAL
+SECONDS_PER_FRAME_NTSC = avf.SECONDS_PER_FRAME_NTSC
 
 
-# --- AVF2 METADATA HEADER ---
-# AVF2 = AVF with the 8 KB header populated instead of zeroed. movplay/AVFPLAY
-# skip the first 16 sectors unconditionally, so AVF2 files remain 100%
-# playable by every existing player. Layout: docs/AVF2_HEADER.md.
-def _avf2_text(value, length):
-    # ASCII 0x20-0x7E only, NUL-padded to the fixed field length.
-    raw = (value or "").encode("ascii", errors="replace")
-    raw = bytes(b if 0x20 <= b <= 0x7E else ord("?") for b in raw)
-    return raw[:length].ljust(length, b"\x00")
-
-
+# --- AVF2 METADATA HEADER --- (built by the shared avf_format lib)
 def build_avf2_header(is_pal, frame_count, poster_data, meta, profile=PROFILE_APAC):
-    spf = SECONDS_PER_FRAME_PAL if is_pal else SECONDS_PER_FRAME_NTSC
-    duration_ms = int(round(frame_count * spf * 1000.0))
-
-    sector0 = bytearray(512)
-    sector0[0:4] = b"AVF2"
-    sector0[4] = 1                                  # header_version
-    sector0[5] = 0 if is_pal else 1                 # system
-    flags = 1 if poster_data else 0                 # bit0 = poster present
-    if poster_data and profile != PROFILE_APAC:
-        flags |= 2                                  # bit1 = poster is encoded
-    sector0[6] = flags                              #        in the video profile
-    sector0[7] = profile                            # video profile (see PROFILE_*)
-    sector0[8:12] = frame_count.to_bytes(4, "little")
-    sector0[12:16] = duration_ms.to_bytes(4, "little")
-    sector0[16:24] = time.strftime("%Y%m%d").encode("ascii")
-    sector0[64:128] = _avf2_text(meta.get("title"), 64)
-    sector0[128:192] = _avf2_text(meta.get("author"), 64)
-    sector0[192:224] = _avf2_text(f"avi2atari {__version__}", 32)
-    sector0[224:352] = _avf2_text(meta.get("comment"), 128)
-    checksum = sum(sector0[0:510]) & 0xFFFF
-    sector0[510:512] = checksum.to_bytes(2, "little")
-
-    poster = poster_data if poster_data else b"\x00" * 7680
-    if len(poster) != 7680:
-        raise RuntimeError(f"poster frame must be 7680 bytes, got {len(poster)}")
-    return bytes(sector0) + poster
+    # Thin wrapper over avf_format; the converter stamps its own version.
+    m = dict(meta or {})
+    m["converter"] = f"avi2atari {__version__}"
+    return avf.build_avf2_header(is_pal, frame_count, poster_data, m, profile)
 
 
 def probe_duration_seconds(input_file):
