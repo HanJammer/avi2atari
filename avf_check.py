@@ -74,10 +74,21 @@ def parse_avf2_header(buf):
         raw = s0[lo:hi].rstrip(b"\x00")
         return "".join(chr(b) if 0x20 <= b <= 0x7E else "?" for b in raw)
 
+    profile = s0[7]
+    profile_names = {0: "APAC", 1: "C80M3", 2: "C80M4"}
+    if profile not in profile_names:
+        problems.append(f"AVF2 profile byte is {profile}, expected 0 (APAC), "
+                        f"1 (C80M3) or 2 (C80M4)")
+    if (s0[6] & 2) and profile == 0:
+        problems.append("AVF2 flags bit1 (profile-encoded poster) set on an "
+                        "APAC-profile file")
+
     meta = {
         "version": version,
         "system": "PAL" if s0[5] == 0 else "NTSC",
         "poster": bool(s0[6] & 1),
+        "poster_c80": bool(s0[6] & 2),
+        "profile": profile_names.get(profile, f"unknown({profile})"),
         "frame_count": int.from_bytes(s0[8:12], "little"),
         "duration_ms": int.from_bytes(s0[12:16], "little"),
         "date": text(16, 24),
@@ -239,6 +250,8 @@ def validate(path, has_header, system):
         print(f"  AVF2:   v{meta['version']}  {meta['system']}  "
               f"{meta['frame_count']} frames  {secs:.1f}s  "
               f"poster={'yes' if meta['poster'] else 'no'}  date={meta['date']}")
+        print(f"    Profile:   {meta['profile']}"
+              + ("  (poster in profile encoding)" if meta['poster_c80'] else ""))
         print(f"    Title:     {meta['title']}")
         print(f"    Author:    {meta['author']}")
         print(f"    Converter: {meta['converter']}")

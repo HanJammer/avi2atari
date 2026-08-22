@@ -42,9 +42,19 @@ import time
 import shutil
 import numpy as np
 import math
-from numba import jit
+try:
+    from numba import jit
+except ImportError:
+    # Numba is an accelerator, not a requirement: fall back to plain Python
+    # (an order of magnitude slower, but correct) so mismatched numpy/numba
+    # installs never block a conversion outright.
+    def jit(*_args, **_kwargs):
+        def _deco(fn):
+            return fn
+        return _deco
+    print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
-__version__ = "0.4"
+__version__ = "0.5"
 
 # Try importing yt_dlp for URL support
 try:
@@ -63,6 +73,18 @@ WIDTH = 160
 # Every byte must be perfectly aligned, otherwise the video will drift or turn into noise.
 FRAME_SIZE_BYTES = 8704
 
+# --- AVF-C80 (GTIA2RGB COL80 Mode 4) profile ---
+# Frame video payload stays 7680 bytes in the SAME 128-byte block/pad
+# structure as APAC, so frame size, pacing and all tooling are unchanged.
+# Layout: 24 cell rows x [chars 80 | R 80 | G 80 | B 80]; every cell is
+# the half-block glyph (top half = BG nibble, bottom half = FG nibble,
+# AcidMaker's img2atari convention), so each cell shows 2 vertical pixels
+# -> 80x48 true-colour RGB444. Header byte 7 carries the profile id.
+PROFILE_APAC  = 0
+PROFILE_C80M3 = 1        # reserved
+PROFILE_C80M4 = 2
+C80_HALFBLOCK = 0x01     # glyph: rows 0-3 = $00 (BG), rows 4-7 = $FF (FG)
+
 # True seconds per frame on the hardware (312/262 lines of 114 cycles).
 SECONDS_PER_FRAME_PAL = 114.0 * 312.0 / 1773447.5
 SECONDS_PER_FRAME_NTSC = 114.0 * 262.0 / 1789772.5
@@ -79,7 +101,7 @@ def _avf2_text(value, length):
     return raw[:length].ljust(length, b"\x00")
 
 
-def build_avf2_header(is_pal, frame_count, poster_data, meta):
+def build_avf2_header(is_pal, frame_count, poster_data, meta, profile=PROFILE_APAC):
     spf = SECONDS_PER_FRAME_PAL if is_pal else SECONDS_PER_FRAME_NTSC
     duration_ms = int(round(frame_count * spf * 1000.0))
 
@@ -87,7 +109,11 @@ def build_avf2_header(is_pal, frame_count, poster_data, meta):
     sector0[0:4] = b"AVF2"
     sector0[4] = 1                                  # header_version
     sector0[5] = 0 if is_pal else 1                 # system
-    sector0[6] = 1 if poster_data else 0            # flags: bit0 = poster
+    flags = 1 if poster_data else 0                 # bit0 = poster present
+    if poster_data and profile != PROFILE_APAC:
+        flags |= 2                                  # bit1 = poster is encoded
+    sector0[6] = flags                              #        in the video profile
+    sector0[7] = profile                            # video profile (see PROFILE_*)
     sector0[8:12] = frame_count.to_bytes(4, "little")
     sector0[12:16] = duration_ms.to_bytes(4, "little")
     sector0[16:24] = time.strftime("%Y%m%d").encode("ascii")
@@ -150,6 +176,48 @@ def encode_audio_chunk(audio_data):
         out_val = (val * 100) // 255
         out[i] = out_val
     return out
+
+# --- C80M4 VIDEO KERNEL (Numba JIT) ---
+@jit(nopython=True, fastmath=True)
+def encode_c80m4_frame(rgb):
+    # rgb: float32 (48, 80, 3), 0..255. Serpentine Floyd-Steinberg dither
+    # down to RGB444, then packed into the 24-row cell layout.
+    q = np.zeros((48, 80, 3), dtype=np.uint8)
+    work = rgb.copy()
+    for y in range(48):
+        if y % 2 == 0:
+            xs, xe, xd = 0, 80, 1
+        else:
+            xs, xe, xd = 79, -1, -1
+        for x in range(xs, xe, xd):
+            for c in range(3):
+                v = work[y, x, c]
+                qq = int(round(v / 17.0))
+                if qq < 0:
+                    qq = 0
+                if qq > 15:
+                    qq = 15
+                q[y, x, c] = qq
+                e = v - qq * 17.0
+                if 0 <= x + xd < 80:
+                    work[y, x + xd, c] += e * 0.4375        # 7/16
+                if y + 1 < 48:
+                    work[y + 1, x, c] += e * 0.3125         # 5/16
+                    if 0 <= x - xd < 80:
+                        work[y + 1, x - xd, c] += e * 0.1875  # 3/16
+                    if 0 <= x + xd < 80:
+                        work[y + 1, x + xd, c] += e * 0.0625  # 1/16
+    out = np.zeros(7680, dtype=np.uint8)
+    for r in range(24):
+        base = r * 320
+        top = 2 * r          # top pixel -> BG (high nibble)
+        bot = 2 * r + 1      # bottom pixel -> FG (low nibble)
+        for x in range(80):
+            out[base + x] = C80_HALFBLOCK
+            out[base + 80 + x] = (q[top, x, 0] << 4) | q[bot, x, 0]
+            out[base + 160 + x] = (q[top, x, 1] << 4) | q[bot, x, 1]
+            out[base + 240 + x] = (q[top, x, 2] << 4) | q[bot, x, 2]
+    return out.reshape((192, 40))
 
 # --- VIDEO KERNEL (Numba JIT) ---
 @jit(nopython=True, fastmath=True)
@@ -452,6 +520,20 @@ def process_single_file(input_file, system, output_file, config):
     # coefficients; modern HD content is usually tagged BT.709 and would yield
     # subtly off greens/skin tones if fed through unconverted. Letting libswscale
     # do the matrix conversion during the scale stage costs nothing extra.
+    c80 = config['profile'] == PROFILE_C80M4
+    if c80:
+        # C80M4: 80x48 true-colour cells; the FPGA renders RGB directly,
+        # so no BT.601 trip - plain RGB from the scaler.
+        if config['aspect'] == 'fit':
+            scale_filter = ("scale=80:48:force_original_aspect_ratio=decrease:flags=lanczos,"
+                            "pad=80:48:(ow-iw)/2:(oh-ih)/2:black")
+        else:
+            scale_filter = "scale=80:48:flags=lanczos"
+        vf_chain = (f"{scale_filter},"
+                    f"eq=contrast={config['contrast']},"
+                    f"hue=s={config['saturation']},"
+                    f"fps={fps},format=rgb24")
+        print("    Profile: AVF-C80 M4 (GTIA2RGB COL80, 80x48 RGB444)")
     common_scale_opts = "flags=lanczos:in_color_matrix=auto:out_color_matrix=bt601"
     if config['aspect'] == 'fit':
         # Preserve source aspect ratio, pad with black to 160x192 (letter/pillarbox).
@@ -470,12 +552,13 @@ def process_single_file(input_file, system, output_file, config):
     # while `hue=s=` scales chroma linearly - so values like 1.5 actually do
     # something visible. Contrast still goes through `eq` (no equivalent in `hue`).
     # Both filters are no-ops at 1.0, so default behaviour is preserved.
-    vf_chain = (
-        f"{scale_filter},"
-        f"eq=contrast={config['contrast']},"
-        f"hue=s={config['saturation']},"
-        f"fps={fps},format=yuv420p"
-    )
+    if not c80:
+        vf_chain = (
+            f"{scale_filter},"
+            f"eq=contrast={config['contrast']},"
+            f"hue=s={config['saturation']},"
+            f"fps={fps},format=yuv420p"
+        )
 
     # Audio Filters: Loudnorm (EBU R128) or Manual Gain
     if config['loudnorm']:
@@ -570,11 +653,15 @@ def process_single_file(input_file, system, output_file, config):
 
     try:
         while True:
-            y_data = f_vid.read(160 * 192)
-            if len(y_data) != 30720: break
+            if c80:
+                rgb_data = f_vid.read(80 * 48 * 3)
+                if len(rgb_data) != 11520: break
+            else:
+                y_data = f_vid.read(160 * 192)
+                if len(y_data) != 30720: break
 
-            u_data = f_vid.read(80 * 96)
-            v_data = f_vid.read(80 * 96)
+                u_data = f_vid.read(80 * 96)
+                v_data = f_vid.read(80 * 96)
 
             # Read audio chunk or generate silence
             if not use_dummy_audio:
@@ -587,12 +674,16 @@ def process_single_file(input_file, system, output_file, config):
                 # This handles both end-of-file and dummy-audio scenarios
                 a_data += b'\x80' * (audio_chunk_size - len(a_data))
 
-            y_plane = np.frombuffer(y_data, dtype=np.uint8).reshape((192, 160))
-            u_plane = np.frombuffer(u_data, dtype=np.uint8).reshape((96, 80))
-            v_plane = np.frombuffer(v_data, dtype=np.uint8).reshape((96, 80))
             a_chunk = np.frombuffer(a_data, dtype=np.uint8)
 
-            encoded_vid = encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal)
+            if c80:
+                rgb = np.frombuffer(rgb_data, dtype=np.uint8).reshape((48, 80, 3)).astype(np.float32)
+                encoded_vid = encode_c80m4_frame(rgb)
+            else:
+                y_plane = np.frombuffer(y_data, dtype=np.uint8).reshape((192, 160))
+                u_plane = np.frombuffer(u_data, dtype=np.uint8).reshape((96, 80))
+                v_plane = np.frombuffer(v_data, dtype=np.uint8).reshape((96, 80))
+                encoded_vid = encode_video_frame(y_plane, u_plane, v_plane, errfi, errfq, errfy, is_pal)
             encoded_aud = encode_audio_chunk(a_chunk)
 
             # AVF2 poster: keep overwriting until the chosen frame is reached,
@@ -633,7 +724,8 @@ def process_single_file(input_file, system, output_file, config):
         # AVF2: patch the metadata header into the (so far zeroed) first
         # 16 sectors, now that frame_count and the poster are known.
         if config['avf2'] and frame_count > 0:
-            header = build_avf2_header(is_pal, frame_count, poster_data, avf2_meta)
+            header = build_avf2_header(is_pal, frame_count, poster_data, avf2_meta,
+                                       config['profile'])
             fout.seek(0)
             fout.write(header)
             print(f"    AVF2 header: title='{avf2_meta['title']}', "
@@ -679,6 +771,10 @@ def main():
                                       "(ignored in batch/list mode)")
     parser.add_argument("--version", action="version", version=f"avi2atari {__version__}")
     parser.add_argument("--no-header", action="store_true", help="Disable 8KB header (not recommended!)")
+    parser.add_argument("--profile", choices=['apac', 'c80m4'], default='apac',
+                        help="Video profile: 'apac' (classic, every Atari) or 'c80m4' "
+                             "(AVF-C80: GTIA2RGB COL80 Mode 4, 80x48 true-colour RGB444; "
+                             "needs a GTIA2RGB and a C80-capable player; implies --avf2)")
 
     # AVF2 metadata header (see docs/AVF2_HEADER.md). Fully backward
     # compatible: existing players skip the header region unconditionally.
@@ -723,6 +819,15 @@ def main():
         print("ERROR: --avf2 requires the 8KB header; it cannot be combined with --no-header.")
         sys.exit(1)
 
+    if args.profile == 'c80m4':
+        if args.no_header:
+            print("ERROR: --profile c80m4 requires the AVF2 header (players must be able "
+                  "to identify the profile); it cannot be combined with --no-header.")
+            sys.exit(1)
+        if not args.avf2:
+            print("NOTE: --profile c80m4 implies --avf2 (the profile id lives in the header).")
+            args.avf2 = True
+
     # Config dictionary
     config = {
         'no_header': args.no_header,
@@ -732,6 +837,7 @@ def main():
         'volume': args.volume,
         'loudnorm': args.loudnorm,
         'avf2': args.avf2,
+        'profile': PROFILE_C80M4 if args.profile == 'c80m4' else PROFILE_APAC,
         'title': args.title,
         'author': args.author,
         'comment': args.comment,
