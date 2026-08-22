@@ -87,6 +87,29 @@ avf meta legacy.avf --to-avf2 --system PAL --set-title "Title"         --poster-
 no poster. The video payload is never re-encoded - only the 8 KB header
 changes - so the upgrade is instant and lossless.
 
+## The AVF format, and why AVF2 is a lovely upgrade
+
+**AVF (v1) - "Legacy".** The classic Atari Video Format is a bare,
+beam-synchronous stream: no magic number, no header, no metadata - just
+rigidly aligned 8704-byte frames that ANTIC races the electron beam to
+display straight from storage. Brilliant, but a bag of `.avf` files
+tells you nothing about itself: no title, no author, no preview, not
+even whether it is PAL or NTSC. Full spec: [spec/AVF_FORMAT.md](spec/AVF_FORMAT.md).
+
+**AVF2 - the upgrade.** AVF2 fills the 8 KB region that every player
+already skips with a proper metadata header: magic + checksum, TV
+system, frame count and duration, title / author / converter / date /
+comment, a **poster frame**, and a **video-profile byte** (APAC or the
+true-colour AVF-C80). It is **100% backward compatible** - every
+existing player skips those 16 sectors unchanged, so an AVF2 file still
+plays everywhere, while new tools can show a title, a thumbnail and a
+poster, and pick the right decoder automatically. Full spec:
+[spec/AVF2_HEADER.md](spec/AVF2_HEADER.md).
+
+AVF2 is the recommended default; a plain v1 stream is called **Legacy**
+throughout the suite, and any Legacy file upgrades to AVF2 losslessly
+(only the header changes - the video is never re-encoded).
+
 ## Web GUI (self-host)
 
 A FastAPI web front-end wraps the whole suite - convert (single or

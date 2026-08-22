@@ -224,7 +224,8 @@ def _job_convert_files(job, files, opts):
                 _apply_image_poster(outdir, poster)
             res = _collect(outdir, base)
             if not res:
-                raise RuntimeError("no .avf produced")
+                raise RuntimeError("no .avf produced: "
+                                   + " | ".join(job.tail[-6:]))
             job.payload, job.name, job.mtype = res
         job.percent = 100; job.state = "done"; job.msg = "done"
     except Exception as e:
@@ -254,7 +255,8 @@ def _job_convert_urls(job, urls, opts):
                                        + " | ".join(job.tail[-4:]))
             res = _collect(outdir, "avf_urls")
             if not res:
-                raise RuntimeError("no .avf produced")
+                raise RuntimeError("no .avf produced: "
+                                   + " | ".join(job.tail[-6:]))
             job.payload, job.name, job.mtype = res
         job.percent = 100; job.state = "done"; job.msg = "done"
     except Exception as e:
@@ -276,7 +278,8 @@ def _job_testtone(job, opts):
                 raise RuntimeError("test-gen failed")
             res = _collect(d, "test_tone")
             if not res:
-                raise RuntimeError("no .avf produced")
+                raise RuntimeError("no .avf produced: "
+                                   + " | ".join(job.tail[-6:]))
             job.payload, job.name, job.mtype = res
         job.percent = 100; job.state = "done"; job.msg = "done"
     except Exception as e:

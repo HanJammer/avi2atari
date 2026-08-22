@@ -92,8 +92,8 @@
 
   <div class="tabs">
     <button data-tab="convert" class="active">Convert</button>
-    <button data-tab="meta">Metadata</button>
-    <button data-tab="upgrade">Upgrade Legacy</button>
+    <button data-tab="meta">Player / Metadata</button>
+    <button data-tab="upgrade">Upgrade Legacy AVF</button>
   </div>
 
   <!-- CONVERT -->
@@ -114,6 +114,11 @@
           <option value="apac">APAC (every Atari)</option>
           <option value="c80m4">AVF-C80 M4 (GTIA2RGB)</option>
         </select></div>
+    </div>
+    <div id="c80warn" class="disc" style="display:none;border-color:var(--accent)">
+      AVF-C80 (GTIA2RGB true-colour): the <b>converter is ready</b>, but no
+      player decodes it yet - Atari-side playback is <b>experimental / not
+      working</b>. The file is valid and previews correctly here.
     </div>
     <fieldset>
       <legend>Image</legend>
@@ -163,7 +168,7 @@
     <div class="bar" id="cvBar"><div></div></div>
     <div id="cvStatus" class="status"></div>
     <div id="cvPreview" class="preview"></div>
-    <button id="cvPlay" class="ghost" style="display:none">&#9654; Play on this PC</button>
+    <button id="cvPlay" class="go" style="display:none">&#9654; Play on this PC</button>
   </section>
 
   <!-- META -->
@@ -172,7 +177,7 @@
     <input id="mtFile" type="file" accept=".avf" hidden>
     <div id="mtInfo" class="meta"></div>
     <div id="mtPreview" class="preview"></div>
-    <button id="mtPlay" class="ghost" style="display:none">&#9654; Play on this PC</button>
+    <button id="mtPlay" class="go" style="display:none">&#9654; Play on this PC</button>
     <div id="mtEdit" style="display:none">
       <label>Title</label><input id="mtTitle" type="text" maxlength="64">
       <div class="row">
@@ -308,6 +313,8 @@ $("#cvPoster").onchange = e => {
   $("#cvPosterFrameWrap").style.display = e.target.value==="frame"?"block":"none";
   $("#cvPosterImgWrap").style.display = e.target.value==="image"?"block":"none";
 };
+$("#cvProfile").onchange = e =>
+  $("#c80warn").style.display = e.target.value==="c80m4" ? "block":"none";
 $("#cvContrast").oninput = e => $("#cvContrastV").textContent = (+e.target.value).toFixed(2);
 $("#cvSat").oninput = e => $("#cvSatV").textContent = (+e.target.value).toFixed(2);
 $("#cvVol").oninput = e => $("#cvVolV").textContent = e.target.value+" dB";
