@@ -2,16 +2,21 @@
 """AVI2ATARI AVF Suite - web backend (FastAPI).
 
 Reuses the exact CLI converter (shelled out per job in an isolated tmpfs
-dir) and the shared avf_format library for metadata/preview - no format
-logic is duplicated here. RAM-only: scratch lives on tmpfs (/dev/shm in
-the container); nothing is persisted, only request IP + filenames are
-logged (see the disclaimer in the UI).
+dir) and the shared avf_format library for metadata/preview/decoding - no
+format logic is duplicated here. RAM-only: scratch lives on tmpfs
+(/dev/shm in the container); nothing is persisted, only request IP +
+file names / URLs are logged (see the disclaimer in the UI).
 """
 import io
 import os
+import re
+import random
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
 import zipfile
 import logging
 
@@ -20,15 +25,15 @@ from fastapi.responses import (JSONResponse, StreamingResponse, FileResponse,
                                Response)
 from fastapi.staticfiles import StaticFiles
 
-# the suite lives one dir up; import the shared library from there
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import avf_format as avf   # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 STATIC = os.path.join(HERE, "static")
+CONVERTER = os.path.join(REPO, "avi2atari.py")
 
-# --- configuration (environment) -------------------------------------------
+
 def _env_bool(name, default):
     v = os.environ.get(name)
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
@@ -36,15 +41,16 @@ def _env_bool(name, default):
 
 YOUTUBE_ENABLED = _env_bool("YOUTUBE_ENABLED", False)
 LOG_REQUESTS = _env_bool("LOG_REQUESTS", True)
-SERVER_MODE = _env_bool("SERVER_MODE", False)      # show the "hosted" disclaimer
+SERVER_MODE = _env_bool("SERVER_MODE", False)
+LOCAL_PLAYBACK = _env_bool("LOCAL_PLAYBACK", False)
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "512"))
+CONVERT_TIMEOUT = int(os.environ.get("CONVERT_TIMEOUT", "1800"))
 SCRATCH_DIR = os.environ.get("SCRATCH_DIR") or (
     "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir())
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("avf-suite")
-
 app = FastAPI(title="AVI2ATARI AVF Suite")
 
 
@@ -59,79 +65,211 @@ def audit(request, action, name):
         log.info("%s | %s | %s", client_ip(request), action, name)
 
 
-def job_dir():
-    return tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_")
+# ===========================================================================
+# job model (async conversion with progress); everything lives in RAM/tmpfs
+# ===========================================================================
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+_FRAME_RE = re.compile(r"Frame (\d+)")
 
 
-# ---------------------------------------------------------------------------
-# converter (shell out to the CLI, isolated per job)
-# ---------------------------------------------------------------------------
-def build_convert_argv(inp, out_base, opts):
-    argv = [sys.executable, os.path.join(REPO, "avi2atari.py"), inp,
-            "--system", opts["system"], "--out", out_base]
-    if opts["profile"] == "c80m4":
-        argv += ["--profile", "c80m4"]         # implies --avf2
-    elif opts["avf2"]:
+class Job:
+    def __init__(self):
+        self.id = uuid.uuid4().hex[:12]
+        self.state = "running"          # running | done | error
+        self.percent = 0
+        self.msg = "starting..."
+        self.error = None
+        self.payload = None
+        self.name = None
+        self.mtype = "application/octet-stream"
+        self.ts = time.time()
+
+
+def _new_job():
+    j = Job()
+    with JOBS_LOCK:
+        for k in [k for k, v in JOBS.items() if time.time() - v.ts > 1800]:
+            JOBS.pop(k, None)
+        JOBS[j.id] = j
+    return j
+
+
+def _ffprobe_duration(path):
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path], capture_output=True, text=True,
+            timeout=60).stdout.strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+
+def _run_converter(argv, cwd, job, base_frac, span, total):
+    p = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, bufsize=1)
+    for line in p.stdout:
+        m = _FRAME_RE.search(line)
+        if m and total:
+            frac = min(1.0, int(m.group(1)) / total)
+            job.percent = int((base_frac + frac * span) * 100)
+            job.msg = f"encoding frame {m.group(1)}/{total}"
+        elif "Extracting" in line or "Downloading" in line:
+            job.msg = line.strip()[:80]
+    p.wait(timeout=CONVERT_TIMEOUT)
+    return p.returncode
+
+
+def _collect(d, base):
+    avfs = sorted(x for x in os.listdir(d) if x.lower().endswith(".avf"))
+    if not avfs:
+        return None
+    if len(avfs) == 1:
+        with open(os.path.join(d, avfs[0]), "rb") as f:
+            return f.read(), base + "-" + avfs[0].split("-")[-1], \
+                "application/octet-stream"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for a in avfs:
+            z.write(os.path.join(d, a), a)
+    return buf.getvalue(), base + "-avf.zip", "application/zip"
+
+
+def _resolve_poster(opts, dur):
+    """--poster seconds for this file, from the poster mode."""
+    mode = opts.get("poster_mode", "none")
+    if mode == "frame":
+        return opts.get("poster_secs", 0.0)
+    if mode == "random" and dur > 0:
+        return round(random.uniform(0, dur * 0.9), 2)
+    return None
+
+
+def _conv_args(inp, out_base, o, poster):
+    argv = [sys.executable, CONVERTER, inp, "--system", o["system"],
+            "--out", out_base, "--aspect", o.get("aspect", "fit")]
+    if o["profile"] == "c80m4":
+        argv += ["--profile", "c80m4"]
+    elif o.get("avf2", True):
         argv += ["--avf2"]
     for k in ("title", "author", "comment"):
-        if opts.get(k):
-            argv += [f"--{k}", opts[k]]
-    argv += ["--aspect", opts.get("aspect", "fit")]
-    if opts.get("contrast"):
-        argv += ["--contrast", str(opts["contrast"])]
-    if opts.get("saturation"):
-        argv += ["--saturation", str(opts["saturation"])]
-    if opts.get("loudnorm"):
+        if o.get(k):
+            argv += [f"--{k}", o[k]]
+    if o.get("contrast") is not None:
+        argv += ["--contrast", str(o["contrast"])]
+    if o.get("saturation") is not None:
+        argv += ["--saturation", str(o["saturation"])]
+    if o.get("loudnorm"):
         argv += ["--loudnorm"]
-    elif opts.get("volume") is not None:
-        argv += ["--volume", str(opts["volume"])]
-    if opts.get("poster") is not None:
-        argv += ["--poster", str(opts["poster"])]
+    elif o.get("volume") is not None:
+        argv += ["--volume", str(o["volume"])]
+    if poster is not None:
+        argv += ["--poster", str(poster)]
     return argv
 
 
-def run_convert(input_bytes, filename, opts):
-    """Convert in an isolated tmpfs job dir. Returns (payload_bytes,
-    download_name, media_type). One .avf streams as-is; several (e.g.
-    --system BOTH) are zipped."""
-    with job_dir() as d:
-        ext = os.path.splitext(filename)[1] or ".bin"
-        inp = os.path.join(d, "input" + ext)
-        with open(inp, "wb") as f:
-            f.write(input_bytes)
-        argv = build_convert_argv(inp, os.path.join(d, "out"), opts)
-        r = subprocess.run(argv, cwd=d, capture_output=True, text=True,
-                           timeout=int(os.environ.get("CONVERT_TIMEOUT", "1800")))
-        avfs = sorted(x for x in os.listdir(d) if x.lower().endswith(".avf"))
-        if not avfs:
-            raise HTTPException(500, "conversion produced no output:\n"
-                                + (r.stderr or r.stdout or "")[-2000:])
-        base = os.path.splitext(filename)[0]
-        if len(avfs) == 1:
-            with open(os.path.join(d, avfs[0]), "rb") as f:
-                return f.read(), base + "-" + avfs[0].split("-")[-1], \
-                    "application/octet-stream"
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-            for a in avfs:
-                z.write(os.path.join(d, a), base + "-" + a.split("-")[-1])
-        return buf.getvalue(), base + "-avf.zip", "application/zip"
+def _job_convert_files(job, files, opts):
+    try:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_") as d:
+            n = len(files)
+            outdir = os.path.join(d, "out")
+            os.makedirs(outdir)
+            for i, (fn, data) in enumerate(files):
+                ext = os.path.splitext(fn)[1] or ".bin"
+                inp = os.path.join(d, f"in{i}{ext}")
+                with open(inp, "wb") as f:
+                    f.write(data)
+                dur = _ffprobe_duration(inp)
+                fps = avf.FPS_PAL if opts["system"] != "NTSC" else avf.FPS_NTSC
+                total = int(dur * fps) if dur else 0
+                base = os.path.splitext(os.path.basename(fn))[0]
+                job.msg = f"[{i+1}/{n}] {base}"
+                poster = _resolve_poster(opts, dur)
+                rc = _run_converter(
+                    _conv_args(inp, os.path.join(outdir, base), opts, poster),
+                    d, job, i / n, 1.0 / n, total)
+                if rc != 0:
+                    raise RuntimeError(f"converter failed on {fn}")
+            base = os.path.splitext(os.path.basename(files[0][0]))[0] \
+                if n == 1 else "avf_batch"
+            res = _collect(outdir, base)
+            if not res:
+                raise RuntimeError("no .avf produced")
+            job.payload, job.name, job.mtype = res
+        job.percent = 100; job.state = "done"; job.msg = "done"
+    except Exception as e:
+        job.state = "error"; job.error = str(e); job.msg = "error"
 
 
-# ---------------------------------------------------------------------------
-# preview: decode a frame/poster to PNG (server-side, no pygame)
-# ---------------------------------------------------------------------------
+def _job_convert_urls(job, urls, opts):
+    try:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_") as d:
+            outdir = os.path.join(d, "out")
+            os.makedirs(outdir)
+            n = len(urls)
+            for i, url in enumerate(urls):
+                job.msg = f"[{i+1}/{n}] downloading..."
+                argv = [sys.executable, CONVERTER, url, "--system",
+                        opts["system"], "--out", os.path.join(outdir, f"url{i}")]
+                if opts["profile"] == "c80m4":
+                    argv += ["--profile", "c80m4"]
+                elif opts.get("avf2", True):
+                    argv += ["--avf2"]
+                for k in ("title", "author", "comment"):
+                    if opts.get(k):
+                        argv += [f"--{k}", opts[k]]
+                rc = _run_converter(argv, d, job, i / n, 1.0 / n, 0)
+                if rc != 0:
+                    raise RuntimeError(f"failed on {url}")
+            res = _collect(outdir, "avf_urls")
+            if not res:
+                raise RuntimeError("no .avf produced")
+            job.payload, job.name, job.mtype = res
+        job.percent = 100; job.state = "done"; job.msg = "done"
+    except Exception as e:
+        job.state = "error"; job.error = str(e); job.msg = "error"
+
+
+def _job_testtone(job, opts):
+    try:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_") as d:
+            argv = [sys.executable, CONVERTER, "--test-gen",
+                    "--system", opts["system"]]
+            if opts["profile"] == "c80m4":
+                argv += ["--profile", "c80m4"]
+            else:
+                argv += ["--avf2"]
+            job.msg = "generating test signal..."
+            rc = _run_converter(argv, d, job, 0.0, 1.0, 500)
+            if rc != 0:
+                raise RuntimeError("test-gen failed")
+            res = _collect(d, "test_tone")
+            if not res:
+                raise RuntimeError("no .avf produced")
+            job.payload, job.name, job.mtype = res
+        job.percent = 100; job.state = "done"; job.msg = "done"
+    except Exception as e:
+        job.state = "error"; job.error = str(e); job.msg = "error"
+
+
+def _spawn(fn, *a):
+    j = _new_job()
+    threading.Thread(target=fn, args=(j,) + a, daemon=True).start()
+    return j.id
+
+
+# ===========================================================================
+# preview / decode
+# ===========================================================================
 def render_png(video_bytes, profile, is_pal):
     from PIL import Image
-    rgb = avf.decode_frame_rgb(video_bytes, profile, is_pal)   # (H,W,3)
+    rgb = avf.decode_frame_rgb(video_bytes, profile, is_pal)
     img = Image.fromarray(rgb, "RGB").resize((640, 384), Image.NEAREST)
-    b = io.BytesIO()
-    img.save(b, "PNG")
-    return b.getvalue()
+    b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
 
 
 def frame_video(data, info, index):
-    """Raw 7680 video bytes of frame `index` (or the poster if index<0)."""
     if index < 0 and info["meta"] and info["meta"].get("poster"):
         return avf.poster_from_header(data[:avf.HEADER_SIZE], info["meta"]), \
             info["profile"]
@@ -145,119 +283,135 @@ def frame_video(data, info, index):
     return avf.demux_apac_video(frame), info["profile"]
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # API
-# ---------------------------------------------------------------------------
+# ===========================================================================
 @app.get("/api/config")
 def api_config():
-    return {
-        "youtube_enabled": YOUTUBE_ENABLED,
-        "server_mode": SERVER_MODE,
-        "max_upload_mb": MAX_UPLOAD_MB,
-        "suite_version": avf.__version__,
-    }
-
-
-async def _read_upload(f):
-    data = await f.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(413, f"upload exceeds {MAX_UPLOAD_MB} MB")
-    return data
+    return {"youtube_enabled": YOUTUBE_ENABLED, "server_mode": SERVER_MODE,
+            "local_playback": LOCAL_PLAYBACK, "max_upload_mb": MAX_UPLOAD_MB,
+            "suite_version": avf.__version__}
 
 
 @app.post("/api/convert")
-async def api_convert(request: Request, file: UploadFile = File(...),
+async def api_convert(request: Request, files: list[UploadFile] = File(...),
                       system: str = Form("PAL"), profile: str = Form("apac"),
                       avf2: bool = Form(True), title: str = Form(""),
                       author: str = Form(""), comment: str = Form(""),
                       aspect: str = Form("fit"), contrast: float = Form(1.0),
                       saturation: float = Form(1.0), loudnorm: bool = Form(True),
-                      volume: float = Form(12.0), poster: str = Form("")):
-    data = await _read_upload(file)
-    audit(request, f"convert:{system}:{profile}", file.filename)
+                      volume: float = Form(12.0), poster_mode: str = Form("none"),
+                      poster_frame: str = Form("")):
+    payloads, total = [], 0
+    for f in files:
+        data = await f.read()
+        total += len(data)
+        if total > MAX_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(413, f"uploads exceed {MAX_UPLOAD_MB} MB")
+        payloads.append((f.filename, data))
+    audit(request, f"convert:{system}:{profile}:{len(payloads)}f",
+          ",".join(n for n, _ in payloads))
     opts = dict(system=system, profile=profile, avf2=avf2, title=title,
                 author=author, comment=comment, aspect=aspect,
                 contrast=contrast, saturation=saturation, loudnorm=loudnorm,
-                volume=volume, poster=float(poster) if poster else None)
-    payload, name, mtype = run_convert(data, file.filename, opts)
-    return StreamingResponse(io.BytesIO(payload), media_type=mtype,
-                             headers={"Content-Disposition":
-                                      f'attachment; filename="{name}"'})
+                volume=volume, poster_mode=poster_mode)
+    if poster_mode == "frame" and poster_frame:
+        fps = avf.FPS_PAL if system != "NTSC" else avf.FPS_NTSC
+        opts["poster_secs"] = float(poster_frame) / fps
+    return {"job": _spawn(_job_convert_files, payloads, opts)}
 
 
 @app.post("/api/convert_url")
-async def api_convert_url(request: Request, url: str = Form(...),
+async def api_convert_url(request: Request, urls: str = Form(...),
                           system: str = Form("PAL"), profile: str = Form("apac"),
                           avf2: bool = Form(True), title: str = Form(""),
                           author: str = Form(""), comment: str = Form("")):
     if not YOUTUBE_ENABLED:
         raise HTTPException(403, "URL downloading is disabled on this server")
-    audit(request, f"convert_url:{system}:{profile}", url)
-    with job_dir() as d:
-        argv = [sys.executable, os.path.join(REPO, "avi2atari.py"), url,
-                "--system", system, "--out", "out"]
-        if profile == "c80m4":
-            argv += ["--profile", "c80m4"]
-        elif avf2:
-            argv += ["--avf2"]
-        for k, v in (("title", title), ("author", author), ("comment", comment)):
-            if v:
-                argv += [f"--{k}", v]
-        r = subprocess.run(argv, cwd=d, capture_output=True, text=True,
-                           timeout=int(os.environ.get("CONVERT_TIMEOUT", "3600")))
-        avfs = sorted(x for x in os.listdir(d) if x.lower().endswith(".avf"))
-        if not avfs:
-            raise HTTPException(500, "conversion produced no output:\n"
-                                + (r.stderr or r.stdout or "")[-2000:])
-        if len(avfs) == 1:
-            with open(os.path.join(d, avfs[0]), "rb") as f:
-                payload = f.read()
-            return StreamingResponse(io.BytesIO(payload),
-                                     media_type="application/octet-stream",
-                                     headers={"Content-Disposition":
-                                              f'attachment; filename="{avfs[0]}"'})
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-            for a in avfs:
-                z.write(os.path.join(d, a), a)
-        return StreamingResponse(io.BytesIO(buf.getvalue()),
-                                 media_type="application/zip",
-                                 headers={"Content-Disposition":
-                                          'attachment; filename="avf.zip"'})
+    url_list = [u.strip() for u in urls.splitlines() if u.strip()]
+    if not url_list:
+        raise HTTPException(400, "no URLs given")
+    audit(request, f"convert_url:{system}:{len(url_list)}", " ".join(url_list))
+    opts = dict(system=system, profile=profile, avf2=avf2, title=title,
+                author=author, comment=comment)
+    return {"job": _spawn(_job_convert_urls, url_list, opts)}
+
+
+@app.post("/api/testtone")
+async def api_testtone(request: Request, system: str = Form("PAL"),
+                       profile: str = Form("apac")):
+    audit(request, f"testtone:{system}:{profile}", "-")
+    return {"job": _spawn(_job_testtone, dict(system=system, profile=profile))}
+
+
+@app.get("/api/progress/{job_id}")
+def api_progress(job_id: str):
+    j = JOBS.get(job_id)
+    if not j:
+        raise HTTPException(404, "no such job")
+    return {"state": j.state, "percent": j.percent, "msg": j.msg,
+            "error": j.error, "name": j.name}
+
+
+@app.get("/api/result/{job_id}")
+def api_result(job_id: str):
+    j = JOBS.get(job_id)
+    if not j or j.state != "done" or j.payload is None:
+        raise HTTPException(404, "result not ready")
+    payload, name, mtype = j.payload, j.name, j.mtype
+    JOBS.pop(job_id, None)
+    return StreamingResponse(io.BytesIO(payload), media_type=mtype,
+                             headers={"Content-Disposition":
+                                      f'attachment; filename="{name}"'})
+
+
+@app.post("/api/play")
+async def api_play(request: Request, file: UploadFile = File(...),
+                   system: str = Form("")):
+    if not LOCAL_PLAYBACK:
+        raise HTTPException(403, "server-side playback is disabled")
+    data = await file.read()
+    d = tempfile.mkdtemp(dir=SCRATCH_DIR, prefix="avfplay_")
+    p = os.path.join(d, "play.avf")
+    with open(p, "wb") as f:
+        f.write(data)
+    argv = [sys.executable, os.path.join(REPO, "avfplayer.py"), p]
+    if system:
+        argv.append(system)
+    subprocess.Popen(argv)
+    audit(request, "play", file.filename)
+    return {"ok": True}
 
 
 @app.post("/api/meta")
 async def api_meta(request: Request, file: UploadFile = File(...)):
-    data = await _read_upload(file)
+    data = await file.read()
     audit(request, "meta", file.filename)
-    with job_dir() as d:
+    with tempfile.TemporaryDirectory(dir=SCRATCH_DIR) as d:
         p = os.path.join(d, "f.avf")
         with open(p, "wb") as f:
             f.write(data)
         info = avf.classify(p)
-    meta = info["meta"]
     return JSONResponse({
         "kind": info["kind"], "profile": info["profile"],
         "profile_name": avf.PROFILE_NAMES.get(info["profile"], "?"),
         "n_frames": info["n_frames"], "is_pal": info["is_pal"],
-        "meta": meta, "problems": info["problems"],
-    })
+        "meta": info["meta"], "problems": info["problems"]})
 
 
 @app.post("/api/meta_edit")
 async def api_meta_edit(request: Request, file: UploadFile = File(...),
                         title: str = Form(None), author: str = Form(None),
                         comment: str = Form(None)):
-    data = await _read_upload(file)
+    data = await file.read()
     audit(request, "meta_edit", file.filename)
-    meta, problems = avf.parse_avf2_header(data[:avf.HEADER_SIZE])
+    meta, _ = avf.parse_avf2_header(data[:avf.HEADER_SIZE])
     if meta is None:
         raise HTTPException(400, "not an AVF2 file - upgrade Legacy first")
-    updates = {k: v for k, v in
-               (("title", title), ("author", author), ("comment", comment))
-               if v is not None}
-    new_header = avf.set_metadata_bytes(data[:avf.HEADER_SIZE], updates)
-    out = new_header + data[avf.HEADER_SIZE:]
+    updates = {k: v for k, v in (("title", title), ("author", author),
+                                 ("comment", comment)) if v is not None}
+    out = avf.set_metadata_bytes(data[:avf.HEADER_SIZE], updates) \
+        + data[avf.HEADER_SIZE:]
     name = os.path.splitext(file.filename)[0] + "-edited.avf"
     return StreamingResponse(io.BytesIO(out), media_type="application/octet-stream",
                              headers={"Content-Disposition":
@@ -269,18 +423,17 @@ async def api_upgrade(request: Request, file: UploadFile = File(...),
                       system: str = Form("PAL"), title: str = Form(None),
                       author: str = Form(None), comment: str = Form(None),
                       poster_frame: str = Form("")):
-    data = await _read_upload(file)
+    data = await file.read()
     audit(request, f"upgrade:{system}", file.filename)
-    with job_dir() as d:
+    with tempfile.TemporaryDirectory(dir=SCRATCH_DIR) as d:
         p = os.path.join(d, "f.avf")
         with open(p, "wb") as f:
             f.write(data)
-        updates = {k: v for k, v in
-                   (("title", title), ("author", author), ("comment", comment))
-                   if v is not None}
+        upd = {k: v for k, v in (("title", title), ("author", author),
+                                 ("comment", comment)) if v is not None}
         try:
             out = avf.legacy_to_avf2_bytes(
-                p, system == "PAL", updates,
+                p, system == "PAL", upd,
                 int(poster_frame) if poster_frame else None)
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -293,8 +446,8 @@ async def api_upgrade(request: Request, file: UploadFile = File(...),
 @app.post("/api/preview")
 async def api_preview(request: Request, file: UploadFile = File(...),
                       frame: int = Form(-1)):
-    data = await _read_upload(file)
-    with job_dir() as d:
+    data = await file.read()
+    with tempfile.TemporaryDirectory(dir=SCRATCH_DIR) as d:
         p = os.path.join(d, "f.avf")
         with open(p, "wb") as f:
             f.write(data)
@@ -316,18 +469,17 @@ app.mount("/", StaticFiles(directory=STATIC), name="static")
 
 def main():
     import uvicorn
-    global YOUTUBE_ENABLED
-    # Local launch (python web/app.py / webui.bat|sh): enable URL input by
-    # default - it is a personal machine. Docker runs `uvicorn web.app:app`
-    # (not this main), so the container keeps the safe OFF default unless
-    # .env turns it on.
+    global YOUTUBE_ENABLED, LOCAL_PLAYBACK
     if os.environ.get("YOUTUBE_ENABLED") is None:
         YOUTUBE_ENABLED = True
+    if os.environ.get("LOCAL_PLAYBACK") is None:
+        LOCAL_PLAYBACK = True
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     avf.print_banner("Web", avf.__version__)
     print(f"AVF Suite web UI on http://{host}:{port}  "
-          f"(YouTube input: {'on' if YOUTUBE_ENABLED else 'off'})")
+          f"(YouTube: {'on' if YOUTUBE_ENABLED else 'off'}, "
+          f"local playback: {'on' if LOCAL_PLAYBACK else 'off'})")
     uvicorn.run(app, host=host, port=port)
 
 
