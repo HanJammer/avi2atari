@@ -124,11 +124,16 @@
         <div><label>Poster</label>
           <select id="cvPoster"><option value="none">none</option>
             <option value="frame">at frame...</option>
-            <option value="random">random frame</option></select></div>
+            <option value="random">random frame</option>
+            <option value="image">from image...</option></select></div>
       </div>
       <div id="cvPosterFrameWrap" style="display:none">
         <label>Poster frame number</label>
         <input id="cvPosterFrame" type="number" min="0" value="250">
+      </div>
+      <div id="cvPosterImgWrap" style="display:none">
+        <label>Poster image (jpg/png)</label>
+        <input id="cvPosterImg" type="file" accept="image/*">
       </div>
       <label>Contrast <span class="pill" id="cvContrastV">1.00</span></label>
       <div class="slider"><input id="cvContrast" type="range" min="0.5" max="2" step="0.05" value="1"></div>
@@ -191,6 +196,8 @@
       <div><label>Poster frame (optional)</label>
         <input id="upPoster" type="number" min="0" placeholder="e.g. 250"></div>
     </div>
+    <label>...or a poster image (jpg/png, overrides the frame)</label>
+    <input id="upPosterImg" type="file" accept="image/*">
     <label>Title</label><input id="upTitle" type="text">
     <div class="row">
       <div><label>Author</label><input id="upAuthor" type="text"></div>
@@ -287,8 +294,10 @@ wireDrop($("#cvDrop"), $("#cvFile"), fl => { cvFiles=[...fl];
   $("#cvList").textContent = cvFiles.map(f=>f.name).join(", ");
   $("#cvDrop").textContent = cvFiles.length? cvFiles.length+" file(s) selected"
     : "Drop videos here, or click to choose (multiple OK)"; });
-$("#cvPoster").onchange = e => $("#cvPosterFrameWrap").style.display =
-  e.target.value==="frame" ? "block":"none";
+$("#cvPoster").onchange = e => {
+  $("#cvPosterFrameWrap").style.display = e.target.value==="frame"?"block":"none";
+  $("#cvPosterImgWrap").style.display = e.target.value==="image"?"block":"none";
+};
 $("#cvContrast").oninput = e => $("#cvContrastV").textContent = (+e.target.value).toFixed(2);
 $("#cvSat").oninput = e => $("#cvSatV").textContent = (+e.target.value).toFixed(2);
 $("#cvVol").oninput = e => $("#cvVolV").textContent = e.target.value+" dB";
@@ -314,6 +323,8 @@ $("#cvGo").onclick = () => {
     fd.append("saturation",$("#cvSat").value); fd.append("loudnorm",$("#cvLoud").checked);
     fd.append("volume",$("#cvVol").value); fd.append("poster_mode",$("#cvPoster").value);
     fd.append("poster_frame",$("#cvPosterFrame").value);
+    if($("#cvPoster").value==="image" && $("#cvPosterImg").files[0])
+      fd.append("poster_image",$("#cvPosterImg").files[0]);
     runJob("/api/convert", fd, $("#cvBar"), $("#cvStatus"), onConverted);
   } else if(urls){
     const fd=new FormData(); fd.append("urls",urls); convCommon(fd);
@@ -376,6 +387,7 @@ $("#upGo").onclick = async () => {
   fd.append("title",$("#upTitle").value); fd.append("author",$("#upAuthor").value);
   fd.append("comment",$("#upComment").value);
   if($("#upPoster").value) fd.append("poster_frame",$("#upPoster").value);
+  if($("#upPosterImg").files[0]) fd.append("poster_image",$("#upPosterImg").files[0]);
   const r=await fetch("/api/upgrade",{method:"POST",body:fd});
   if(!r.ok){ setStatus($("#upStatus"),"Error: "+await r.text(),"err"); return; }
   dlBlob(await r.blob(), upFile.name.replace(/\.avf$/i,"")+"-avf2.avf");

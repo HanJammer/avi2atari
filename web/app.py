@@ -193,6 +193,11 @@ def _job_convert_files(job, files, opts):
                     raise RuntimeError(f"converter failed on {fn}")
             base = os.path.splitext(os.path.basename(files[0][0]))[0] \
                 if n == 1 else "avf_batch"
+            if opts.get("poster_image"):
+                pimg, pname = opts["poster_image"]
+                poster = encode_image_poster(pimg, pname, opts["system"],
+                                             opts["profile"])
+                _apply_image_poster(outdir, poster)
             res = _collect(outdir, base)
             if not res:
                 raise RuntimeError("no .avf produced")
@@ -253,6 +258,48 @@ def _job_testtone(job, opts):
         job.state = "error"; job.error = str(e); job.msg = "error"
 
 
+def encode_image_poster(image_bytes, filename, system, profile):
+    """Encode a still image into a 7680-byte poster of the given profile by
+    running the real converter on a 1-frame clip and lifting its poster."""
+    with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfimg_") as d:
+        ext = os.path.splitext(filename)[1] or ".png"
+        img = os.path.join(d, "img" + ext)
+        with open(img, "wb") as f:
+            f.write(image_bytes)
+        clip = os.path.join(d, "clip.mp4")
+        fps = "25" if system != "NTSC" else "30"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
+                        "-i", img, "-t", "0.2", "-r", fps, "-pix_fmt",
+                        "yuv420p", clip], check=True, timeout=120)
+        argv = [sys.executable, CONVERTER, clip, "--system", system,
+                "--out", os.path.join(d, "p"), "--poster", "0"]
+        argv += ["--profile", "c80m4"] if profile == "c80m4" else ["--avf2"]
+        subprocess.run(argv, cwd=d, capture_output=True, text=True,
+                       timeout=CONVERT_TIMEOUT)
+        avfs = [x for x in os.listdir(d) if x.lower().endswith(".avf")]
+        if not avfs:
+            raise RuntimeError("poster encode produced no AVF")
+        with open(os.path.join(d, avfs[0]), "rb") as f:
+            head = f.read(avf.HEADER_SIZE)
+        meta, _ = avf.parse_avf2_header(head)
+        poster = avf.poster_from_header(head, meta)
+        if not poster:
+            raise RuntimeError("poster encode had no poster")
+        return poster
+
+
+def _apply_image_poster(outdir, poster):
+    for a in os.listdir(outdir):
+        if not a.lower().endswith(".avf"):
+            continue
+        p = os.path.join(outdir, a)
+        with open(p, "rb") as f:
+            data = f.read()
+        head = avf.inject_poster(data[:avf.HEADER_SIZE], poster)
+        with open(p, "wb") as f:
+            f.write(head + data[avf.HEADER_SIZE:])
+
+
 def _spawn(fn, *a):
     j = _new_job()
     threading.Thread(target=fn, args=(j,) + a, daemon=True).start()
@@ -301,7 +348,8 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
                       aspect: str = Form("fit"), contrast: float = Form(1.0),
                       saturation: float = Form(1.0), loudnorm: bool = Form(True),
                       volume: float = Form(12.0), poster_mode: str = Form("none"),
-                      poster_frame: str = Form("")):
+                      poster_frame: str = Form(""),
+                      poster_image: UploadFile = File(None)):
     payloads, total = [], 0
     for f in files:
         data = await f.read()
@@ -318,6 +366,9 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
     if poster_mode == "frame" and poster_frame:
         fps = avf.FPS_PAL if system != "NTSC" else avf.FPS_NTSC
         opts["poster_secs"] = float(poster_frame) / fps
+    if poster_mode == "image" and poster_image is not None:
+        opts["poster_mode"] = "none"
+        opts["poster_image"] = (await poster_image.read(), poster_image.filename)
     return {"job": _spawn(_job_convert_files, payloads, opts)}
 
 
@@ -422,9 +473,11 @@ async def api_meta_edit(request: Request, file: UploadFile = File(...),
 async def api_upgrade(request: Request, file: UploadFile = File(...),
                       system: str = Form("PAL"), title: str = Form(None),
                       author: str = Form(None), comment: str = Form(None),
-                      poster_frame: str = Form("")):
+                      poster_frame: str = Form(""),
+                      poster_image: UploadFile = File(None)):
     data = await file.read()
     audit(request, f"upgrade:{system}", file.filename)
+    pimg = await poster_image.read() if poster_image is not None else None
     with tempfile.TemporaryDirectory(dir=SCRATCH_DIR) as d:
         p = os.path.join(d, "f.avf")
         with open(p, "wb") as f:
@@ -434,9 +487,13 @@ async def api_upgrade(request: Request, file: UploadFile = File(...),
         try:
             out = avf.legacy_to_avf2_bytes(
                 p, system == "PAL", upd,
-                int(poster_frame) if poster_frame else None)
+                None if pimg else (int(poster_frame) if poster_frame else None))
         except ValueError as e:
             raise HTTPException(400, str(e))
+        if pimg:
+            poster = encode_image_poster(pimg, poster_image.filename,
+                                         system, "apac")
+            out = avf.inject_poster(out[:avf.HEADER_SIZE], poster)                 + out[avf.HEADER_SIZE:]
     name = os.path.splitext(file.filename)[0] + "-avf2.avf"
     return StreamingResponse(io.BytesIO(out), media_type="application/octet-stream",
                              headers={"Content-Disposition":

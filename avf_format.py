@@ -363,3 +363,20 @@ def decode_frame_rgb(video_bytes, profile, is_pal):
     if is_c80(profile):
         return decode_c80_rgb(video_bytes)
     return decode_apac_rgb(video_bytes, is_pal)
+
+
+def inject_poster(header8192, poster7680, profile=None):
+    """Return a new 8 KB AVF2 header with sectors 1-15 replaced by
+    poster7680 and the poster flags/checksum updated. profile defaults to
+    the header's own byte 7 (sets flags bit1 for non-APAC)."""
+    if len(poster7680) != VIDEO_BYTES:
+        raise ValueError(f"poster must be {VIDEO_BYTES} bytes")
+    s0 = bytearray(header8192[:512])
+    if s0[0:4] != b"AVF2":
+        raise ValueError("not an AVF2 header")
+    prof = s0[7] if profile is None else profile
+    flags = (s0[6] | 1)
+    flags = (flags | 2) if prof != PROFILE_APAC else (flags & ~2)
+    s0[6] = flags
+    s0[510:512] = checksum(s0).to_bytes(2, "little")
+    return bytes(s0) + bytes(poster7680)
