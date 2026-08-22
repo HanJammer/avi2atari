@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AVI2ATARI AVF Suite</title>
+<style>
+  :root {
+    --bg:#14121a; --panel:#1e1b26; --ink:#e8e4f0; --dim:#a89fc0;
+    --accent:#ff9f1c; --accent2:#8a5cff; --line:#332e42; --ok:#39d98a; --err:#ff5c72;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { padding:22px 20px 10px; text-align:center;
+    background:linear-gradient(90deg,#ff9f1c,#ff5c72,#8a5cff,#33b5ff);
+    background-clip:text; -webkit-background-clip:text; color:transparent; }
+  header h1 { margin:0; font-size:26px; letter-spacing:.5px; }
+  header p { margin:4px 0 0; font-size:13px; color:var(--dim);
+    background:none; -webkit-text-fill-color:var(--dim); }
+  main { max-width:760px; margin:0 auto; padding:0 16px 60px; }
+  .tabs { display:flex; gap:6px; margin:18px 0 0; }
+  .tabs button { flex:1; padding:10px; background:var(--panel); color:var(--dim);
+    border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;
+    cursor:pointer; font-size:14px; }
+  .tabs button.active { color:var(--ink); border-color:var(--accent);
+    box-shadow:inset 0 -2px 0 var(--accent); }
+  .panel { display:none; background:var(--panel); border:1px solid var(--line);
+    border-radius:0 0 10px 10px; padding:20px; }
+  .panel.active { display:block; }
+  label { display:block; margin:12px 0 4px; font-size:13px; color:var(--dim); }
+  input[type=text],input[type=number],input[type=url],select {
+    width:100%; padding:8px 10px; background:#161320; color:var(--ink);
+    border:1px solid var(--line); border-radius:6px; font-size:14px; }
+  .row { display:flex; gap:14px; } .row > div { flex:1; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:12px; }
+  .check input { width:auto; }
+  .drop { border:2px dashed var(--line); border-radius:10px; padding:22px;
+    text-align:center; color:var(--dim); cursor:pointer; margin-top:6px; }
+  .drop.hot { border-color:var(--accent); color:var(--ink); }
+  button.go { margin-top:18px; width:100%; padding:12px; font-size:15px;
+    background:linear-gradient(90deg,var(--accent),var(--accent2)); color:#120f18;
+    font-weight:700; border:none; border-radius:8px; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:default; }
+  .status { margin-top:14px; padding:10px 12px; border-radius:6px; font-size:13px;
+    background:#161320; border:1px solid var(--line); white-space:pre-wrap;
+    display:none; }
+  .status.show { display:block; } .status.ok { border-color:var(--ok); }
+  .status.err { border-color:var(--err); color:#ffd0d6; }
+  .meta { margin-top:14px; font-size:13px; } .meta div { display:flex; gap:10px;
+    padding:3px 0; border-bottom:1px solid var(--line); }
+  .meta div span:first-child { color:var(--dim); min-width:110px; }
+  .preview { margin-top:14px; text-align:center; }
+  .preview img { max-width:100%; image-rendering:pixelated; border-radius:6px;
+    border:1px solid var(--line); }
+  .disc { margin:14px 0 0; padding:10px 12px; font-size:12px; color:var(--dim);
+    background:#191622; border:1px solid var(--line); border-radius:6px; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:10px; background:#2a2536;
+    color:var(--accent); margin-left:6px; }
+  footer { text-align:center; color:var(--dim); font-size:12px; padding:20px; }
+  small.hint { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AVI2ATARI &middot; AVF Suite</h1>
+  <p>Video for the Atari 8-bit &middot; APAC &amp; true-colour AVF-C80</p>
+</header>
+<main>
+  <div id="disclaimer" class="disc" style="display:none"></div>
+
+  <div class="tabs">
+    <button data-tab="convert" class="active">Convert</button>
+    <button data-tab="meta">Metadata</button>
+    <button data-tab="upgrade">Upgrade Legacy</button>
+  </div>
+
+  <!-- CONVERT -->
+  <section id="convert" class="panel active">
+    <div id="cvDrop" class="drop">Drop a video here, or click to choose</div>
+    <input id="cvFile" type="file" accept="video/*" hidden>
+    <div id="urlWrap" style="display:none">
+      <label>...or a video URL</label>
+      <input id="cvUrl" type="url" placeholder="https://...">
+    </div>
+    <div class="row">
+      <div><label>TV system</label>
+        <select id="cvSystem"><option>PAL</option><option>NTSC</option>
+          <option value="BOTH">BOTH (zip)</option></select></div>
+      <div><label>Profile</label>
+        <select id="cvProfile">
+          <option value="apac">APAC (every Atari)</option>
+          <option value="c80m4">AVF-C80 M4 (GTIA2RGB)</option>
+        </select></div>
+    </div>
+    <div class="row">
+      <div><label>Aspect</label>
+        <select id="cvAspect"><option value="fit">fit (letterbox)</option>
+          <option value="stretch">stretch</option></select></div>
+      <div><label>Audio</label>
+        <select id="cvAudio"><option value="loudnorm">loudness normalize</option>
+          <option value="gain">manual +12 dB</option></select></div>
+    </div>
+    <label>Title <span class="pill">AVF2</span></label>
+    <input id="cvTitle" type="text" placeholder="optional">
+    <div class="row">
+      <div><label>Author</label><input id="cvAuthor" type="text"></div>
+      <div><label>Comment</label><input id="cvComment" type="text"></div>
+    </div>
+    <div class="check"><input id="cvAvf2" type="checkbox" checked>
+      <label style="margin:0">Write AVF2 metadata header (recommended)</label></div>
+    <button id="cvGo" class="go">Convert</button>
+    <div id="cvStatus" class="status"></div>
+    <div id="cvPreview" class="preview"></div>
+  </section>
+
+  <!-- META -->
+  <section id="meta" class="panel">
+    <div id="mtDrop" class="drop">Drop an .avf here to inspect / edit</div>
+    <input id="mtFile" type="file" accept=".avf" hidden>
+    <div id="mtInfo" class="meta"></div>
+    <div id="mtPreview" class="preview"></div>
+    <div id="mtEdit" style="display:none">
+      <label>Title</label><input id="mtTitle" type="text">
+      <div class="row">
+        <div><label>Author</label><input id="mtAuthor" type="text"></div>
+        <div><label>Comment</label><input id="mtComment" type="text"></div>
+      </div>
+      <button id="mtGo" class="go">Save edited copy</button>
+    </div>
+    <div id="mtStatus" class="status"></div>
+  </section>
+
+  <!-- UPGRADE -->
+  <section id="upgrade" class="panel">
+    <p><small class="hint">A <b>Legacy</b> file is a plain AVF v1 stream with
+      no metadata. Upgrading only rewrites the 8&nbsp;KB header - the video is
+      never re-encoded. The TV system is a manual choice: v1 carries no
+      marker for it.</small></p>
+    <div id="upDrop" class="drop">Drop a Legacy .avf here</div>
+    <input id="upFile" type="file" accept=".avf" hidden>
+    <div class="row">
+      <div><label>TV system</label>
+        <select id="upSystem"><option>PAL</option><option>NTSC</option></select></div>
+      <div><label>Poster frame (optional)</label>
+        <input id="upPoster" type="number" min="0" placeholder="e.g. 250"></div>
+    </div>
+    <label>Title</label><input id="upTitle" type="text">
+    <div class="row">
+      <div><label>Author</label><input id="upAuthor" type="text"></div>
+      <div><label>Comment</label><input id="upComment" type="text"></div>
+    </div>
+    <button id="upGo" class="go">Upgrade to AVF2</button>
+    <div id="upStatus" class="status"></div>
+  </section>
+</main>
+<footer>&copy; HanJammer / Rusty Bits 2026</footer>
+
+<script>
+let CFG = {youtube_enabled:false, server_mode:false};
+const $ = s => document.querySelector(s);
+
+fetch("/api/config").then(r=>r.json()).then(c=>{
+  CFG = c;
+  if (c.youtube_enabled) $("#urlWrap").style.display = "block";
+  if (c.server_mode) {
+    const d = $("#disclaimer"); d.style.display = "block";
+    d.textContent = "Files you convert are processed in RAM and are NOT stored "
+      + "on the server. For abuse prevention, your IP address and the "
+      + "submitted file names / URLs are logged.";
+  }
+});
+
+document.querySelectorAll(".tabs button").forEach(b=>{
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active"); $("#"+b.dataset.tab).classList.add("active");
+  };
+});
+
+function wireDrop(drop, input, onfile) {
+  drop.onclick = () => input.click();
+  input.onchange = () => { if (input.files[0]) onfile(input.files[0]); };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add("hot"); };
+  drop.ondragleave = () => drop.classList.remove("hot");
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove("hot");
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files;
+      onfile(e.dataTransfer.files[0]); } };
+}
+
+function setStatus(el, msg, cls) {
+  el.className = "status show " + (cls||""); el.textContent = msg;
+}
+function dlBlob(blob, name) {
+  const u = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u);
+}
+
+// ---- Convert ----
+let cvFile = null;
+wireDrop($("#cvDrop"), $("#cvFile"), f => { cvFile = f;
+  $("#cvDrop").textContent = f.name; });
+$("#cvGo").onclick = async () => {
+  const url = $("#cvUrl") && $("#cvUrl").value.trim();
+  if (!cvFile && !url) return setStatus($("#cvStatus"), "Choose a file or URL.", "err");
+  const fd = new FormData();
+  const opts = {system:$("#cvSystem").value, profile:$("#cvProfile").value,
+    avf2:$("#cvAvf2").checked, title:$("#cvTitle").value, author:$("#cvAuthor").value,
+    comment:$("#cvComment").value, aspect:$("#cvAspect").value,
+    loudnorm:$("#cvAudio").value==="loudnorm"};
+  let endpoint = "/api/convert";
+  if (cvFile) { fd.append("file", cvFile); }
+  else { endpoint = "/api/convert_url"; fd.append("url", url); }
+  for (const k in opts) fd.append(k, opts[k]);
+  $("#cvGo").disabled = true;
+  setStatus($("#cvStatus"), "Converting... (this can take a while)", "");
+  try {
+    const r = await fetch(endpoint, {method:"POST", body:fd});
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition")||"";
+    const name = (cd.match(/filename="(.+?)"/)||[])[1] || "output.avf";
+    dlBlob(blob, name);
+    setStatus($("#cvStatus"), "Done: " + name, "ok");
+    if (name.endsWith(".avf")) showPreview($("#cvPreview"), blob);
+  } catch(e) { setStatus($("#cvStatus"), "Error: " + e.message, "err"); }
+  $("#cvGo").disabled = false;
+};
+
+async function showPreview(box, blob) {
+  const fd = new FormData(); fd.append("file", blob, "f.avf"); fd.append("frame", -1);
+  try {
+    const r = await fetch("/api/preview", {method:"POST", body:fd});
+    if (!r.ok) return; const img = URL.createObjectURL(await r.blob());
+    box.innerHTML = '<img src="'+img+'" alt="preview">';
+  } catch(e) {}
+}
+
+// ---- Metadata ----
+let mtFile = null;
+wireDrop($("#mtDrop"), $("#mtFile"), async f => {
+  mtFile = f; $("#mtDrop").textContent = f.name;
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch("/api/meta", {method:"POST", body:fd});
+  const j = await r.json();
+  const m = j.meta; const box = $("#mtInfo");
+  const rows = [["Kind", j.kind], ["Profile", j.profile_name],
+    ["Frames", j.n_frames]];
+  if (m) rows.push(["System", m.system], ["Title", m.title], ["Author", m.author],
+    ["Converter", m.converter], ["Date", m.date], ["Comment", m.comment],
+    ["Poster", m.poster ? "yes" : "no"]);
+  box.innerHTML = rows.map(r=>`<div><span>${r[0]}</span><span>${r[1]||""}</span></div>`).join("");
+  if (m) { $("#mtEdit").style.display="block"; $("#mtTitle").value=m.title||"";
+    $("#mtAuthor").value=m.author||""; $("#mtComment").value=m.comment||"";
+    showPreview($("#mtPreview"), f); }
+  else { $("#mtEdit").style.display="none"; $("#mtPreview").innerHTML="";
+    setStatus($("#mtStatus"), "Legacy / no metadata - use the Upgrade tab.", ""); }
+});
+$("#mtGo").onclick = async () => {
+  if (!mtFile) return; const fd = new FormData(); fd.append("file", mtFile);
+  fd.append("title",$("#mtTitle").value); fd.append("author",$("#mtAuthor").value);
+  fd.append("comment",$("#mtComment").value);
+  try {
+    const r = await fetch("/api/meta_edit", {method:"POST", body:fd});
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    dlBlob(blob, mtFile.name.replace(/\.avf$/i,"") + "-edited.avf");
+    setStatus($("#mtStatus"), "Saved edited copy.", "ok");
+  } catch(e) { setStatus($("#mtStatus"), "Error: " + e.message, "err"); }
+};
+
+// ---- Upgrade ----
+let upFile = null;
+wireDrop($("#upDrop"), $("#upFile"), f => { upFile=f; $("#upDrop").textContent=f.name; });
+$("#upGo").onclick = async () => {
+  if (!upFile) return setStatus($("#upStatus"), "Choose a Legacy .avf.", "err");
+  const fd = new FormData(); fd.append("file", upFile);
+  fd.append("system",$("#upSystem").value); fd.append("title",$("#upTitle").value);
+  fd.append("author",$("#upAuthor").value); fd.append("comment",$("#upComment").value);
+  if ($("#upPoster").value) fd.append("poster_frame",$("#upPoster").value);
+  try {
+    const r = await fetch("/api/upgrade", {method:"POST", body:fd});
+    if (!r.ok) throw new Error(await r.text());
+    dlBlob(await r.blob(), upFile.name.replace(/\.avf$/i,"") + "-avf2.avf");
+    setStatus($("#upStatus"), "Upgraded to AVF2.", "ok");
+  } catch(e) { setStatus($("#upStatus"), "Error: " + e.message, "err"); }
+};
+</script>
+</body>
+</html>

@@ -214,6 +214,7 @@ def validate(path, has_header, system):
 
 
 def main():
+    avf.print_banner("Validator", __version__)
     ap = argparse.ArgumentParser(description="AVF structural validator")
     ap.add_argument("file", help="AVF file to validate")
     ap.add_argument("--no-header", action="store_true",

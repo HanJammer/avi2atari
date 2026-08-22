@@ -471,6 +471,7 @@ class AVFPlayer:
         if self.looping: t=self.font.render("LOOP",1,(0,255,0)); self.screen.blit(t,(w-50,10))
 
 def main():
+    avf.print_banner("Player", __version__)
     parser = argparse.ArgumentParser(description="AVF Video Player")
     parser.add_argument("file", help="Input AVF file")
     parser.add_argument("system", nargs="?", default=None,

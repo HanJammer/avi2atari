@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+docs
+refs
+*.avf
+*.mp4
+downloads

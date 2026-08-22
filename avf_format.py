@@ -277,3 +277,18 @@ def legacy_to_avf2_bytes(path, is_pal, meta=None, poster_frame=None):
     header = build_avf2_header(is_pal, n_frames, poster, meta or {},
                               PROFILE_APAC)
     return header + payload
+
+
+# ===========================================================================
+# Shared CLI banner for the suite
+# ===========================================================================
+BANNER_WIDTH = 78
+
+
+def print_banner(tool, version):
+    """Print the suite banner to stderr (keeps stdout clean for piping)."""
+    import sys
+    rule = "-" * BANNER_WIDTH
+    line = (f"AVI2ATARI AVF Suite - {tool} {version} "
+            f"- HanJammer / RustyBits 2026")
+    print(f"{rule}\n{line}\n{rule}", file=sys.stderr)

@@ -72,6 +72,35 @@ avf meta legacy.avf --to-avf2 --system PAL --set-title "Title"         --poster-
 no poster. The video payload is never re-encoded - only the 8 KB header
 changes - so the upgrade is instant and lossless.
 
+## Web GUI (self-host)
+
+A FastAPI web front-end wraps the whole suite - convert (single or
+batch -> zip), inspect/edit metadata, upgrade Legacy -> AVF2, and a
+server-side PNG preview - reusing the exact CLI converter and the shared
+`avf_format` library. It is **RAM-only**: scratch lives on tmpfs and
+nothing about a conversion is persisted (only the client IP and the
+submitted file names are logged, for abuse prevention; the UI shows a
+disclaimer when `SERVER_MODE=1`).
+
+Run locally:
+
+```
+pip install -r web/requirements.txt
+python -m uvicorn web.app:app --port 8000     # http://127.0.0.1:8000
+```
+
+Or with Docker + traefik (copy the examples, then bring it up):
+
+```
+cp .env.example .env                 # set DOMAIN, toggles
+cp docker-compose.yml.example docker-compose.yml
+docker compose up -d --build
+```
+
+`YOUTUBE_ENABLED=1` (plus uncommenting `yt-dlp` in
+`web/requirements-docker.txt`) turns on URL input. AVF2 is the default
+output format; a plain v1 stream is called **Legacy** throughout the UI.
+
 ## Installation
 
 ### The easy way (If you are Windows user and not sure what to do):

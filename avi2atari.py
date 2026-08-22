@@ -724,6 +724,7 @@ def generate_test_file(filename):
     print("    Test file created successfully.")
 
 def main():
+    avf.print_banner("Converter", __version__)
     parser = argparse.ArgumentParser(description="Atari 8-bit AVF Converter")
 
     # Input Options

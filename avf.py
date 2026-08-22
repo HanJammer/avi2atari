@@ -19,6 +19,7 @@ def meta_cmd(argv):
     import argparse
     import os
     import avf_format as avf
+    avf.print_banner("Metadata", avf.__version__)
     ap = argparse.ArgumentParser(
         prog="avf meta",
         description="Show or edit AVF2 metadata; upgrade Legacy (v1) to AVF2.")
