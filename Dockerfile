@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY web/requirements-docker.txt /app/web/requirements-docker.txt
-RUN pip install --no-cache-dir -r web/requirements-docker.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 

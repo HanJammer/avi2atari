@@ -1,4 +1,17 @@
-numpy
-numba
-ffmpeg-python
-yt-dlp
+# AVI2ATARI AVF Suite - one dependency set for the whole suite
+# (converter, validator, desktop player, and the web UI).
+#
+#   pip install -r requirements.txt
+#
+# ffmpeg is a SYSTEM dependency (not pip) - install it separately and put
+# it on PATH (the Docker image and the README cover this).
+
+numpy==2.0.2            # pinned: numba needs a compatible numpy
+numba==0.60.0           # JIT for the encoder (optional but ~10x faster)
+Pillow==10.4.0          # poster/preview rendering
+pygame==2.6.1           # desktop player (avfplayer / "Play on this PC")
+fastapi==0.115.6        # web backend
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+yt-dlp                  # URL/YouTube input - intentionally UNPINNED
+                        # (YouTube changes often; a pinned yt-dlp rots fast)

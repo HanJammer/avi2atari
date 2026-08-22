@@ -1,8 +1,0 @@
-# Container deps for the AVF Suite web service.
-fastapi
-uvicorn[standard]
-python-multipart
-Pillow
-numpy<2.1
-numba            # JIT for the encoder; remove to slim the image (slower)
-# yt-dlp         # uncomment AND set YOUTUBE_ENABLED=1 to allow URL input

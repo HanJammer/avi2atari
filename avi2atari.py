@@ -679,7 +679,7 @@ def process_single_file(input_file, system, output_file, config):
             if frame_count % 100 == 0:
                 elapsed = time.time() - start_time
                 fps_proc = frame_count / elapsed
-                print(f"    Encoding... Frame {frame_count} ({fps_proc:.1f} fps)", end='\r')
+                print(f"    Encoding... Frame {frame_count} ({fps_proc:.1f} fps)", end='\r', flush=True)
 
     except KeyboardInterrupt:
         print("\nAborted.")

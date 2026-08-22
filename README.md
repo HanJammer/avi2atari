@@ -105,7 +105,7 @@ by default on a local run.
 Or by hand:
 
 ```
-pip install -r web/requirements.txt
+pip install -r requirements.txt
 python web/app.py                              # http://127.0.0.1:8000
 ```
 
@@ -117,9 +117,10 @@ cp docker-compose.yml.example docker-compose.yml
 docker compose up -d --build
 ```
 
-`YOUTUBE_ENABLED=1` (plus uncommenting `yt-dlp` in
-`web/requirements-docker.txt`) turns on URL input. AVF2 is the default
-output format; a plain v1 stream is called **Legacy** throughout the UI.
+`YOUTUBE_ENABLED=1` turns on URL input (a local `python web/app.py` run
+enables it by default). AVF2 is the default output format; a plain v1
+stream is called **Legacy** throughout the UI. The whole suite installs
+from one `requirements.txt` (ffmpeg is a separate system dependency).
 
 ## Installation
 

@@ -19,6 +19,7 @@ import time
 import uuid
 import zipfile
 import logging
+import collections
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import (JSONResponse, StreamingResponse, FileResponse,
@@ -83,6 +84,9 @@ class Job:
         self.payload = None
         self.name = None
         self.mtype = "application/octet-stream"
+        self.proc = None
+        self.cancelled = False
+        self.tail = []
         self.ts = time.time()
 
 
@@ -107,17 +111,33 @@ def _ffprobe_duration(path):
 
 
 def _run_converter(argv, cwd, job, base_frac, span, total):
+    # -u (unbuffered) + reading char-by-char so the converter's CR-terminated
+    # progress line updates the bar live instead of arriving only at the end.
     p = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in p.stdout:
-        m = _FRAME_RE.search(line)
-        if m and total:
-            frac = min(1.0, int(m.group(1)) / total)
-            job.percent = int((base_frac + frac * span) * 100)
-            job.msg = f"encoding frame {m.group(1)}/{total}"
-        elif "Extracting" in line or "Downloading" in line:
-            job.msg = line.strip()[:80]
+                         stderr=subprocess.STDOUT, text=True, bufsize=0)
+    job.proc = p
+    tail = collections.deque(maxlen=20)
+    buf, CR, LF = "", chr(13), chr(10)
+    while True:
+        ch = p.stdout.read(1)
+        if ch == "":
+            break
+        if ch == CR or ch == LF:
+            if buf.strip():
+                tail.append(buf.strip())
+                m = _FRAME_RE.search(buf)
+                if m and total:
+                    frac = min(1.0, int(m.group(1)) / total)
+                    job.percent = int((base_frac + frac * span) * 100)
+                    job.msg = f"encoding frame {m.group(1)}/{total}"
+                elif "Extracting" in buf or "Downloading" in buf:
+                    job.msg = buf.strip()[:80]
+            buf = ""
+        else:
+            buf += ch
     p.wait(timeout=CONVERT_TIMEOUT)
+    job.proc = None
+    job.tail = list(tail)
     return p.returncode
 
 
@@ -147,7 +167,7 @@ def _resolve_poster(opts, dur):
 
 
 def _conv_args(inp, out_base, o, poster):
-    argv = [sys.executable, CONVERTER, inp, "--system", o["system"],
+    argv = [sys.executable, "-u", CONVERTER, inp, "--system", o["system"],
             "--out", out_base, "--aspect", o.get("aspect", "fit")]
     if o["profile"] == "c80m4":
         argv += ["--profile", "c80m4"]
@@ -186,11 +206,15 @@ def _job_convert_files(job, files, opts):
                 base = os.path.splitext(os.path.basename(fn))[0]
                 job.msg = f"[{i+1}/{n}] {base}"
                 poster = _resolve_poster(opts, dur)
+                o2 = dict(opts)
+                if not o2.get("title"):
+                    o2["title"] = base          # default title = input file name
                 rc = _run_converter(
-                    _conv_args(inp, os.path.join(outdir, base), opts, poster),
+                    _conv_args(inp, os.path.join(outdir, base), o2, poster),
                     d, job, i / n, 1.0 / n, total)
                 if rc != 0:
-                    raise RuntimeError(f"converter failed on {fn}")
+                    raise RuntimeError(f"failed on {fn}: "
+                                       + " | ".join(job.tail[-4:]))
             base = os.path.splitext(os.path.basename(files[0][0]))[0] \
                 if n == 1 else "avf_batch"
             if opts.get("poster_image"):
@@ -215,7 +239,7 @@ def _job_convert_urls(job, urls, opts):
             n = len(urls)
             for i, url in enumerate(urls):
                 job.msg = f"[{i+1}/{n}] downloading..."
-                argv = [sys.executable, CONVERTER, url, "--system",
+                argv = [sys.executable, "-u", CONVERTER, url, "--system",
                         opts["system"], "--out", os.path.join(outdir, f"url{i}")]
                 if opts["profile"] == "c80m4":
                     argv += ["--profile", "c80m4"]
@@ -226,7 +250,8 @@ def _job_convert_urls(job, urls, opts):
                         argv += [f"--{k}", opts[k]]
                 rc = _run_converter(argv, d, job, i / n, 1.0 / n, 0)
                 if rc != 0:
-                    raise RuntimeError(f"failed on {url}")
+                    raise RuntimeError(f"failed on {url}: "
+                                       + " | ".join(job.tail[-4:]))
             res = _collect(outdir, "avf_urls")
             if not res:
                 raise RuntimeError("no .avf produced")
@@ -239,7 +264,7 @@ def _job_convert_urls(job, urls, opts):
 def _job_testtone(job, opts):
     try:
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_") as d:
-            argv = [sys.executable, CONVERTER, "--test-gen",
+            argv = [sys.executable, "-u", CONVERTER, "--test-gen",
                     "--system", opts["system"]]
             if opts["profile"] == "c80m4":
                 argv += ["--profile", "c80m4"]
@@ -402,6 +427,21 @@ def api_progress(job_id: str):
         raise HTTPException(404, "no such job")
     return {"state": j.state, "percent": j.percent, "msg": j.msg,
             "error": j.error, "name": j.name}
+
+
+@app.post("/api/cancel/{job_id}")
+def api_cancel(job_id: str):
+    j = JOBS.get(job_id)
+    if not j:
+        raise HTTPException(404, "no such job")
+    j.cancelled = True
+    if j.proc:
+        try:
+            j.proc.terminate()
+        except Exception:
+            pass
+    j.state = "error"; j.error = "cancelled"; j.msg = "cancelled"
+    return {"ok": True}
 
 
 @app.get("/api/result/{job_id}")

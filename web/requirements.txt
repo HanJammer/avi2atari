@@ -1,7 +1,0 @@
-# AVI2ATARI AVF Suite - web backend
-fastapi
-uvicorn[standard]
-python-multipart
-Pillow
-numpy
-# optional: yt-dlp   (only needed when YOUTUBE_ENABLED=1)

@@ -62,9 +62,28 @@ def checksum(sector0):
     return sum(sector0[0:510]) & 0xFFFF
 
 
+# AVF2 text-field lengths (bytes, NUL-padded).
+FIELD_TITLE = 64
+FIELD_AUTHOR = 64
+FIELD_CONVERTER = 32
+FIELD_COMMENT = 128
+
+
+def sanitize_atascii(value, length):
+    """Keep only printable ATASCII (0x20-0x7E), truncated to `length`."""
+    out = bytearray()
+    for ch in (value or ""):
+        b = ord(ch)
+        if 0x20 <= b <= 0x7E:
+            out.append(b)
+        if len(out) >= length:
+            break
+    return bytes(out[:length])
+
+
 def _avf2_text(value, length):
-    """Fixed-width NUL-padded ASCII field; non-ASCII dropped."""
-    raw = (value or "").encode("ascii", "ignore")[:length]
+    """Fixed-width NUL-padded field of sanitized printable ATASCII."""
+    raw = sanitize_atascii(value, length)
     return raw + b"\x00" * (length - len(raw))
 
 
