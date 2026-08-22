@@ -54,7 +54,7 @@ except ImportError:
         return _deco
     print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
-__version__ = "0.5"
+__version__ = "0.6"
 
 # Try importing yt_dlp for URL support
 try:
@@ -74,12 +74,15 @@ WIDTH = 160
 FRAME_SIZE_BYTES = 8704
 
 # --- AVF-C80 (GTIA2RGB COL80 Mode 4) profile ---
-# Frame video payload stays 7680 bytes in the SAME 128-byte block/pad
-# structure as APAC, so frame size, pacing and all tooling are unchanged.
-# Layout: 24 cell rows x [chars 80 | R 80 | G 80 | B 80]; every cell is
+# C80 frames are SIMPLER than APAC: the display kernel needs no pads
+# (ANTIC fetches clean 40-byte mode-F lines) and no audio smearing (the
+# CPU is idle during the picture and bulk-reads audio in the vertical
+# blank). Frame = 7680 B video + 512 B linear audio = 8192 B.
+# Video: 24 cell rows x [chars 80 | R 80 | G 80 | B 80]; every cell is
 # the half-block glyph (top half = BG nibble, bottom half = FG nibble,
 # AcidMaker's img2atari convention), so each cell shows 2 vertical pixels
 # -> 80x48 true-colour RGB444. Header byte 7 carries the profile id.
+C80_FRAME_SIZE = 8192
 PROFILE_APAC  = 0
 PROFILE_C80M3 = 1        # reserved
 PROFILE_C80M4 = 2
@@ -691,7 +694,14 @@ def process_single_file(input_file, system, output_file, config):
             if config['avf2'] and frame_count <= poster_idx:
                 poster_data = encoded_vid.flatten().tobytes()
 
-            mux_frame(fout, encoded_vid, encoded_aud, is_pal)
+            if c80:
+                # C80 mux: raw video, then the audio chunk linearly in a
+                # 512-byte field (the kernel plays one sample per scan line)
+                fout.write(encoded_vid.tobytes())
+                afield = bytes(encoded_aud) + b'2' * (512 - len(encoded_aud))
+                fout.write(afield)
+            else:
+                mux_frame(fout, encoded_vid, encoded_aud, is_pal)
 
             # --- INTEGRITY CHECK ---
             # Verifies if the file size matches the expected byte count exactly.
@@ -700,7 +710,8 @@ def process_single_file(input_file, system, output_file, config):
             # python -O does not silently disable the safety net.
             current_pos = fout.tell()
             header_offset = (16 * 512) if not config['no_header'] else 0
-            expected_pos = header_offset + (frame_count + 1) * FRAME_SIZE_BYTES
+            fsz = C80_FRAME_SIZE if c80 else FRAME_SIZE_BYTES
+            expected_pos = header_offset + (frame_count + 1) * fsz
 
             if current_pos != expected_pos:
                 raise RuntimeError(

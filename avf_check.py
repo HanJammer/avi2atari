@@ -36,7 +36,7 @@ import sys
 import os
 import argparse
 
-__version__ = "0.4"
+__version__ = "0.6"
 
 FRAME_SIZE = 8704
 HEADER_SIZE = 16 * 512  # 8192
@@ -206,13 +206,18 @@ def validate(path, has_header, system):
     else:
         payload = data
 
-    if len(payload) % FRAME_SIZE != 0:
+    # C80 profiles use 8192-byte frames (7680 raw video + 512 linear
+    # audio, no pads); APAC keeps the classic 8704-byte mux.
+    c80 = bool(meta) and meta.get("profile", "APAC").startswith("C80")
+    frame_size = 8192 if c80 else FRAME_SIZE
+
+    if len(payload) % frame_size != 0:
         problems.append(
-            f"payload length {len(payload)} is not a multiple of frame size {FRAME_SIZE} "
-            f"(remainder {len(payload) % FRAME_SIZE})"
+            f"payload length {len(payload)} is not a multiple of frame size {frame_size} "
+            f"(remainder {len(payload) % frame_size})"
         )
 
-    n_frames = len(payload) // FRAME_SIZE
+    n_frames = len(payload) // frame_size
 
     # AVF2 cross-checks: the header must agree with reality.
     if meta is not None:
@@ -228,7 +233,9 @@ def validate(path, has_header, system):
     sample_step = max(1, n_frames // 20)  # sample up to ~20 frames across the file
 
     for idx in range(0, n_frames, sample_step):
-        frame = payload[idx * FRAME_SIZE:(idx + 1) * FRAME_SIZE]
+        frame = payload[idx * frame_size:(idx + 1) * frame_size]
+        if c80:
+            continue        # C80 frames carry no pad structure to verify
         problems += check_video_block_padding(frame, idx)
         problems += check_audio_block_padding(frame, idx, is_pal)
         sample_count += 1
