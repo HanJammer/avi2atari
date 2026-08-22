@@ -300,3 +300,66 @@ def print_banner(tool, version):
     line = (f"AVI2ATARI AVF Suite - {tool} {version} "
             f"- HanJammer / RustyBits 2026")
     print(f"{rule}\n{line}\n{rule}", file=sys.stderr)
+
+
+# ===========================================================================
+# Accurate RGB decoders (shared by the web preview; the exact inverse of the
+# encoder's YIQ model - ported from avfplayer's _generate_gtia_palette).
+# numpy is imported lazily so header-only tools stay dependency-light.
+# ===========================================================================
+def gtia_palette(is_pal, phase_shift=0.0, saturation=1.0):
+    import math
+    import numpy as np
+    pal = np.zeros((256, 3), dtype=np.uint8)
+    amp = 40.0 * saturation
+    for chroma in range(16):
+        if chroma == 0:
+            iv = qv = 0.0
+        else:
+            ang = (math.pi * (chroma - 0.5) / 7.0) if is_pal \
+                else (math.pi * (chroma - 1 - 2) / 7.5)
+            ang += phase_shift
+            iv = amp * math.cos(ang)
+            qv = amp * math.sin(ang)
+        for luma in range(16):
+            y = luma * 17.0
+            r = y + 0.9563 * iv + 0.6210 * qv
+            g = y - 0.2721 * iv - 0.6474 * qv
+            b = y - 1.1070 * iv + 1.7046 * qv
+            pal[(chroma << 4) | luma] = [
+                min(255, max(0, int(round(v)))) for v in (r, g, b)]
+    return pal
+
+
+def decode_apac_rgb(video_bytes, is_pal, phase_shift=0.0, saturation=1.0):
+    """7680 APAC bytes -> (96, 80, 3) uint8, encoder-exact GTIA colours."""
+    import numpy as np
+    pal = gtia_palette(is_pal, phase_shift, saturation)
+    vf = np.frombuffer(bytes(video_bytes[:VIDEO_BYTES]), np.uint8).reshape(192, 40)
+    chroma = vf[0::2] if is_pal else vf[1::2]
+    luma = vf[1::2] if is_pal else vf[0::2]
+    h = min(len(chroma), len(luma))
+    c = np.stack([(chroma[:h] >> 4) & 0xF, chroma[:h] & 0xF], -1).reshape(h, 80)
+    l = np.stack([(luma[:h] >> 4) & 0xF, luma[:h] & 0xF], -1).reshape(h, 80)
+    return pal[(c.astype(np.int32) << 4) | l.astype(np.int32)]
+
+
+def decode_c80_rgb(video_bytes):
+    """7680 C80-M4 bytes -> (48, 80, 3) uint8 true-colour RGB444."""
+    import numpy as np
+    a = np.frombuffer(bytes(video_bytes[:VIDEO_BYTES]), np.uint8).reshape(24, 8, 40)
+    R = a[:, 2:4, :].reshape(24, 80).astype(np.int32)
+    G = a[:, 4:6, :].reshape(24, 80).astype(np.int32)
+    B = a[:, 6:8, :].reshape(24, 80).astype(np.int32)
+    out = np.zeros((48, 80, 3), dtype=np.uint8)
+    out[0::2, :, 0] = (R >> 4) * 17; out[1::2, :, 0] = (R & 15) * 17
+    out[0::2, :, 1] = (G >> 4) * 17; out[1::2, :, 1] = (G & 15) * 17
+    out[0::2, :, 2] = (B >> 4) * 17; out[1::2, :, 2] = (B & 15) * 17
+    return out
+
+
+def decode_frame_rgb(video_bytes, profile, is_pal):
+    """Dispatch by profile -> (H, W, 3) uint8."""
+    if is_c80(profile):
+        return decode_c80_rgb(video_bytes)
+    return decode_apac_rgb(video_bytes, is_pal)

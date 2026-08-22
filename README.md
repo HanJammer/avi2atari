@@ -46,6 +46,21 @@ validator and player can never disagree about the container layout:
 | player | `avf play <file.avf>` | play in a desktop window (needs pygame) |
 | metadata | `avf meta <file.avf>` | print AVF2 metadata (no pygame needed) |
 
+Tools in this repo:
+
+- **`avi2atari.py`** - the converter. FFmpeg-fed pipeline, Numba-JIT
+  encode loops, PAL/NTSC, APAC and AVF-C80 profiles, AVF2 metadata,
+  batch and URL input.
+- **`avf_check.py`** - structural validator: confirms the on-disk byte
+  layout (header, frame size, block/pad structure) without an emulator.
+- **`avfplayer.py`** - desktop player (pygame): plays AVF/AVF2 in a
+  window with an encoder-exact GTIA palette, live phase/saturation
+  tuning, scanlines, blending and looping.
+- **`avf_format.py`** - the shared library every tool imports (header
+  build/parse, checksum, frame demux, RGB decoders, Legacy->AVF2).
+- **`avf.py`** - umbrella CLI: `convert | check | play | meta`.
+- **`web/`** - the FastAPI web UI (see below).
+
 `avf.py` is an umbrella CLI over the four; each still runs standalone
 (`python avi2atari.py ...`, `python avf_check.py ...`,
 `python avfplayer.py ...`). The **AVF2** metadata format is the
@@ -82,11 +97,16 @@ nothing about a conversion is persisted (only the client IP and the
 submitted file names are logged, for abuse prevention; the UI shows a
 disclaimer when `SERVER_MODE=1`).
 
-Run locally:
+**Easiest path (one click):** run `webui.bat` (Windows) or `./webui.sh`
+(Linux/macOS). It creates a local `.venv`, installs the web dependencies
+and opens the UI at http://127.0.0.1:8000 - URL/YouTube input is enabled
+by default on a local run.
+
+Or by hand:
 
 ```
 pip install -r web/requirements.txt
-python -m uvicorn web.app:app --port 8000     # http://127.0.0.1:8000
+python web/app.py                              # http://127.0.0.1:8000
 ```
 
 Or with Docker + traefik (copy the examples, then bring it up):
@@ -316,6 +336,28 @@ Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0
 | ![Topo & Roby Example 1](images/topo-roby-avf1_1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2_1.png) |
 
 ---
+
+
+## Desktop player (avfplayer)
+
+`avf play file.avf` (or `python avfplayer.py file.avf [PAL|NTSC]`) opens a
+window. It derives its palette as the exact mathematical inverse of the
+encoder's YIQ model, so at the defaults the colours are what the encoder
+"meant"; both are live-tunable to match your reference hardware by eye.
+
+| Key | Action |
+|-----|--------|
+| `S` | scanlines on/off (default on) |
+| `B` | pixel blending on/off (default on) |
+| `[` / `]` | tune colour phase (hue) in 0.05 rad steps (0 = encoder-exact) |
+| `Shift+[` / `Shift+]` | tune saturation (1.0 = the Atari's chroma; ~2.0 = punchier) |
+| `L` | loop |
+| `D` | oscilloscope overlay |
+
+`--info` prints AVF2 metadata and exits; `--poster` shows the poster
+frame before playback; `--scale N` sets the window scale (3 default,
+8 fills a 4K screen). This player was previously the standalone
+`avfplayer` repository, now merged into the suite.
 
 ## Limitations & Hardware Notes
 

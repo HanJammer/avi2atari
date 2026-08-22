@@ -121,45 +121,12 @@ def run_convert(input_bytes, filename, opts):
 # ---------------------------------------------------------------------------
 # preview: decode a frame/poster to PNG (server-side, no pygame)
 # ---------------------------------------------------------------------------
-def _gtia_rgb(hue, lum):
-    import colorsys
-    v = lum / 15.0
-    if hue == 0:
-        c = int(v * 255)
-        return (c, c, c)
-    ang = ((hue - 1) * 24 + 30) / 360.0
-    r, g, b = colorsys.hsv_to_rgb(ang % 1.0, 0.8, v)
-    return (int(r * 255), int(g * 255), int(b * 255))
-
-
 def render_png(video_bytes, profile, is_pal):
     from PIL import Image
-    if avf.is_c80(profile):
-        img = Image.new("RGB", (80, 48))
-        px = img.load()
-        for r in range(24):
-            base = r * 320
-            for x in range(80):
-                R, G, B = (video_bytes[base + 80 + x], video_bytes[base + 160 + x],
-                           video_bytes[base + 240 + x])
-                px[x, 2 * r] = ((R >> 4) * 17, (G >> 4) * 17, (B >> 4) * 17)
-                px[x, 2 * r + 1] = ((R & 15) * 17, (G & 15) * 17, (B & 15) * 17)
-        out = img.resize((640, 384), Image.NEAREST)
-    else:
-        rows = [video_bytes[i * 40:(i + 1) * 40] for i in range(192)]
-        img = Image.new("RGB", (80, 96))
-        px = img.load()
-        for row in range(96):
-            cr = rows[row * 2] if is_pal else rows[row * 2 + 1]
-            lr = rows[row * 2 + 1] if is_pal else rows[row * 2]
-            for bx in range(40):
-                for n in range(2):
-                    h = (cr[bx] >> (4 * (1 - n))) & 0xF
-                    lm = (lr[bx] >> (4 * (1 - n))) & 0xF
-                    px[bx * 2 + n, row] = _gtia_rgb(h, lm)
-        out = img.resize((640, 384), Image.NEAREST)
+    rgb = avf.decode_frame_rgb(video_bytes, profile, is_pal)   # (H,W,3)
+    img = Image.fromarray(rgb, "RGB").resize((640, 384), Image.NEAREST)
     b = io.BytesIO()
-    out.save(b, "PNG")
+    img.save(b, "PNG")
     return b.getvalue()
 
 
@@ -349,9 +316,18 @@ app.mount("/", StaticFiles(directory=STATIC), name="static")
 
 def main():
     import uvicorn
+    global YOUTUBE_ENABLED
+    # Local launch (python web/app.py / webui.bat|sh): enable URL input by
+    # default - it is a personal machine. Docker runs `uvicorn web.app:app`
+    # (not this main), so the container keeps the safe OFF default unless
+    # .env turns it on.
+    if os.environ.get("YOUTUBE_ENABLED") is None:
+        YOUTUBE_ENABLED = True
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     avf.print_banner("Web", avf.__version__)
+    print(f"AVF Suite web UI on http://{host}:{port}  "
+          f"(YouTube input: {'on' if YOUTUBE_ENABLED else 'off'})")
     uvicorn.run(app, host=host, port=port)
 
 
