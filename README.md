@@ -53,6 +53,25 @@ recommended default; a plain headerless AVF v1 stream is referred to as
 **Legacy**. Both APAC and the true-colour **AVF-C80** (GTIA2RGB COL80
 Mode 4) profiles are understood across the whole suite.
 
+### Inspecting and editing metadata
+
+```
+avf meta film.avf                              # show AVF2 metadata (or "Legacy")
+avf meta film.avf --set-title "My Reel" --set-author "Me"   # edit in place
+avf meta film.avf --set-comment "note" --out copy.avf       # ...or to a copy
+```
+
+Upgrade a **Legacy** (plain v1) file to **AVF2** - the TV system is a
+manual choice because a v1 stream carries no marker for it:
+
+```
+avf meta legacy.avf --to-avf2 --system PAL --set-title "Title"         --poster-frame 250 --out titled.avf
+```
+
+`--poster-frame N` lifts frame N's picture into the poster; omit it for
+no poster. The video payload is never re-encoded - only the 8 KB header
+changes - so the upgrade is instant and lossless.
+
 ## Installation
 
 ### The easy way (If you are Windows user and not sure what to do):

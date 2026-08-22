@@ -8,9 +8,10 @@ needed by the frame decoders in the tools, not here.
 
 Layout reference: avi2atari docs/AVF_FORMAT.md and docs/AVF2_HEADER.md.
 """
+import os
 import time
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 # --- geometry ---------------------------------------------------------------
 WIDTH, HEIGHT = 160, 192          # APAC luma grid
@@ -175,3 +176,104 @@ def poster_from_header(buf, meta):
     if meta and meta.get("poster") and len(buf) >= HEADER_SIZE:
         return buf[512:HEADER_SIZE]
     return None
+
+
+# ===========================================================================
+# Metadata editing + Legacy(v1) -> AVF2 upgrade (used by `avf meta` and web)
+# ===========================================================================
+
+def demux_apac_video(frame):
+    """Extract the 7680 raw video bytes from one 8704-byte APAC frame
+    (inverse of the converter's 64 x 128-byte block mux)."""
+    if len(frame) < FRAME_SIZE_APAC:
+        raise ValueError("APAC frame must be 8704 bytes")
+    out = bytearray()
+    for b in range(64):
+        blk = frame[b * 128:(b + 1) * 128]
+        out += blk[1:41] + blk[45:85] + blk[88:128]   # line0, line1, line2
+    return bytes(out)
+
+
+def classify(path):
+    """Inspect an AVF file. Returns a dict:
+      kind: 'avf2' | 'legacy_zero' | 'legacy_headerless' | 'unknown'
+      profile, meta (or None), header_bytes (8192 or None), payload_off,
+      frame_size, n_frames, is_pal (best guess or None).
+    Legacy = plain AVF v1 (no populated AVF2 header)."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        head = f.read(HEADER_SIZE)
+
+    meta, problems = parse_avf2_header(head)
+    if meta is not None:
+        prof = meta["profile"]
+        fs = frame_size(prof)
+        payload = size - HEADER_SIZE
+        return {
+            "kind": "avf2", "profile": prof, "meta": meta,
+            "header_bytes": head, "payload_off": HEADER_SIZE,
+            "frame_size": fs, "n_frames": payload // fs if fs else 0,
+            "is_pal": meta["is_pal"], "problems": problems,
+        }
+
+    # No AVF2 header. Legacy is always APAC (C80 requires the header).
+    fs = FRAME_SIZE_APAC
+    if size % fs == 0:
+        return {"kind": "legacy_headerless", "profile": PROFILE_APAC,
+                "meta": None, "header_bytes": None, "payload_off": 0,
+                "frame_size": fs, "n_frames": size // fs, "is_pal": None,
+                "problems": []}
+    if size >= HEADER_SIZE and (size - HEADER_SIZE) % fs == 0 \
+            and not any(head):
+        return {"kind": "legacy_zero", "profile": PROFILE_APAC,
+                "meta": None, "header_bytes": head, "payload_off": HEADER_SIZE,
+                "frame_size": fs, "n_frames": (size - HEADER_SIZE) // fs,
+                "is_pal": None, "problems": []}
+    return {"kind": "unknown", "profile": None, "meta": None,
+            "header_bytes": None, "payload_off": 0, "frame_size": fs,
+            "n_frames": 0, "is_pal": None, "problems": ["unrecognised layout"]}
+
+
+def set_metadata_bytes(header8192, updates):
+    """Return a new 8192-byte AVF2 header with title/author/comment updated
+    and the checksum recomputed. Poster, profile, system, frames, duration,
+    date and converter are preserved."""
+    s0 = bytearray(header8192[:512])
+    if s0[0:4] != b"AVF2":
+        raise ValueError("not an AVF2 header")
+    if "title" in updates:
+        s0[64:128] = _avf2_text(updates["title"], 64)
+    if "author" in updates:
+        s0[128:192] = _avf2_text(updates["author"], 64)
+    if "comment" in updates:
+        s0[224:352] = _avf2_text(updates["comment"], 128)
+    s0[510:512] = checksum(s0).to_bytes(2, "little")
+    return bytes(s0) + bytes(header8192[512:HEADER_SIZE])
+
+
+def legacy_to_avf2_bytes(path, is_pal, meta=None, poster_frame=None):
+    """Read a Legacy (v1) APAC file and return the AVF2-upgraded bytes.
+
+    is_pal is a REQUIRED manual choice - v1 streams carry no TV-system
+    marker. poster_frame (int) extracts that frame's picture as the poster;
+    None means no poster. Raises if the file is already AVF2 or unrecognised.
+    """
+    info = classify(path)
+    if info["kind"] == "avf2":
+        raise ValueError("file is already AVF2 (use metadata editing)")
+    if info["kind"] == "unknown":
+        raise ValueError("unrecognised AVF layout - not a plain v1 stream?")
+    with open(path, "rb") as f:
+        f.seek(info["payload_off"])
+        payload = f.read()
+    n_frames = len(payload) // FRAME_SIZE_APAC
+
+    poster = None
+    if poster_frame is not None and n_frames:
+        idx = max(0, min(poster_frame, n_frames - 1))
+        frame = payload[idx * FRAME_SIZE_APAC:(idx + 1) * FRAME_SIZE_APAC]
+        poster = demux_apac_video(frame)
+
+    header = build_avf2_header(is_pal, n_frames, poster, meta or {},
+                              PROFILE_APAC)
+    return header + payload
