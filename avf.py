@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+#
+# avf.py - Umbrella CLI for the AVI2ATARI AVF Suite
+# Copyright (C) 2026 HanJamme
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """avf - umbrella CLI for the avi2atari PC suite.
 
     avf convert <video> [opts]   convert video to AVF/AVF2 (avi2atari)
@@ -11,6 +27,8 @@ library (avf_format), so the converter, checker and player can never
 drift on the container layout again.
 """
 import sys
+
+import avf_format as avf
 
 USAGE = __doc__
 
@@ -127,6 +145,7 @@ def meta_cmd(argv):
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        avf.print_banner("Suite", avf.__version__)
         print(USAGE)
         return 0
     cmd = sys.argv[1]

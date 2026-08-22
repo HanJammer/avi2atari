@@ -285,8 +285,16 @@ def legacy_to_avf2_bytes(path, is_pal, meta=None, poster_frame=None):
 BANNER_WIDTH = 78
 
 
+_banner_shown = False
+
+
 def print_banner(tool, version):
-    """Print the suite banner to stderr (keeps stdout clean for piping)."""
+    """Print the suite banner to stderr, once per process (keeps stdout
+    clean for piping; the umbrella + a sub-tool never double it)."""
+    global _banner_shown
+    if _banner_shown:
+        return
+    _banner_shown = True
     import sys
     rule = "-" * BANNER_WIDTH
     line = (f"AVI2ATARI AVF Suite - {tool} {version} "
