@@ -773,7 +773,7 @@ def main():
                              "(default: 10%% of duration, or 10s if unknown)")
 
     # Image Options
-    parser.add_argument("--saturation", type=float, default=1.0, help="Color saturation boost (default: 1.0)")
+    parser.add_argument("--saturation", type=float, default=1.0, help="Color saturation (0 = black & white, 1.0 = original, 2.0 = boosted; default: 1.0)")
     parser.add_argument("--contrast", type=float, default=1.0, help="Contrast adjustment (default: 1.0)")
     parser.add_argument("--aspect", choices=['stretch', 'fit'], default='stretch',
                         help="How to fit source into 160x192: 'stretch' (legacy default, "
