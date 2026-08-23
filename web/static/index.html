@@ -66,6 +66,7 @@
     border:1px solid var(--line); }
   .disc { margin:14px 0 0; padding:10px 12px; font-size:12px; color:var(--dim);
     background:#191622; border:1px solid var(--line); border-radius:6px; }
+  .disc a { color:var(--accent); }
   .pill { font-size:11px; padding:1px 7px; border-radius:10px; background:#2a2536;
     color:var(--accent); margin-left:6px; }
   small.hint { color:var(--dim); font-size:12px; }
@@ -116,9 +117,10 @@
         </select></div>
     </div>
     <div id="c80warn" class="disc" style="display:none;border-color:var(--accent)">
-      AVF-C80 (GTIA2RGB true-colour): the <b>converter is ready</b>, but no
-      player decodes it yet - Atari-side playback is <b>experimental / not
-      working</b>. The file is valid and previews correctly here.
+      AVF-C80 (requires GTIA2RGB, offers <b>true-colour</b> playback): use the
+      AV2PLAY player available at
+      <a href="https://github.com/HanJammer/av2play" target="_blank" rel="noopener">github.com/HanJammer/av2play</a>
+      - videos will play in the legacy players too, but colours will be wrong.
     </div>
     <fieldset>
       <legend>Image</legend>

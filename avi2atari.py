@@ -755,10 +755,10 @@ def main():
     parser.add_argument("--profile", choices=['apac', 'c80m4'], default='apac',
                         help="Video profile: 'apac' (classic, every Atari) or 'c80m4' "
                              "(AVF-C80: GTIA2RGB COL80 Mode 4, 80x48 true-colour RGB444; "
-                             "implies --avf2). NOTE: the c80m4 ENCODER is ready, but "
-                             "Atari-side playback is EXPERIMENTAL / not working yet - no "
-                             "player decodes it today. The file is valid and previews "
-                             "correctly on PC (avfplayer / web).")
+                             "implies --avf2). c80m4 needs a GTIA2RGB and the AV2PLAY "
+                             "player (https://github.com/HanJammer/av2play) for true "
+                             "colour; it also plays in legacy AVF players, but the "
+                             "colours will be wrong.")
 
     # AVF2 metadata header (see docs/AVF2_HEADER.md). Fully backward
     # compatible: existing players skip the header region unconditionally.
