@@ -254,19 +254,28 @@ have no redundancy.
 
 ## AVF-C80 profile (GTIA2RGB COL80 Mode 4)
 
-A true-colour variant selected by AVF2 header byte 7 = 2. The container
-is identical (8 KB header + fixed-size frames) but the frame is simpler
-than APAC because the display kernel needs no pads or audio smearing:
+A true-colour variant selected by AVF2 header byte 7 = 2. It uses the
+**identical container** to APAC - same 8 KB header, same 8704-byte
+frames, same block/pad video mux and the same audio interleave - so the
+proven `movplay` streaming kernel and audio path are reused unchanged.
+Only the **video content** differs:
 
-- Frame = 8192 bytes = 7680 video + 512 linear audio (one POKEY sample
-  per scan line; 312 used on PAL, 262 on NTSC, rest = 0x32 silence).
-- Video = 24 cell rows x [chars 80 | R 80 | G 80 | B 80] (80 bytes per
-  plane). Every cell uses the half-block glyph (code 0x01: rows 0-3 = BG
-  nibble = top pixel, rows 4-7 = FG nibble = bottom pixel), so each cell
-  shows two vertical RGB444 pixels -> 80x48 true colour.
-- Plane order matches the GTIA2RGB Mode 4 display list (char/R/G/B, two
-  scan lines each = 8 lines per cell row).
+- Each frame's 7680 video bytes are 24 cell rows of
+  `[chars 80 | R 80 | G 80 | B 80]` (80 bytes per plane, laid out across
+  the 8 scan lines of a COL80 character row). Every cell uses the
+  half-block glyph (top half = BG nibble = top pixel, bottom half = FG
+  nibble = bottom pixel), giving 80x48 true-colour RGB444.
+- The GTIA2RGB, in COL80 Mode 4, forms the 80 cells from the fetched
+  byte sequence and assigns planes by scan-line position; it only
+  watches ANTIC's AN0..AN2, so a normal character-mode display list
+  (as APAC streaming already uses) drives it.
 
-APAC (profile 0) remains the default and is unchanged. A player that
-does not recognise the profile byte must not attempt C80 playback (the
-data is COL80 cell data, not APAC luma/chroma).
+Because the container is byte-for-byte an APAC file apart from the video
+content and the profile byte, `avf_check` validates C80 with the same
+structural checks, and any APAC-capable player streams the bytes fine -
+it just needs COL80 Mode 4 enabled (and the 8-line DL offset the
+GTIA2RGB adds) to render them as colour cells rather than luma/chroma.
+
+APAC (profile 0) remains the default. A player that does not recognise
+the profile byte must not enable Mode 4, or it would show the cell data
+as APAC noise.

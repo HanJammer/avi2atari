@@ -353,8 +353,8 @@ def frame_video(data, info, index):
     frame = data[off:off + fs]
     if len(frame) < fs:
         raise HTTPException(400, "frame index out of range")
-    if avf.is_c80(info["profile"]):
-        return frame[:avf.VIDEO_BYTES], info["profile"]
+    # Both profiles use the APAC container; unwrap the block/pad mux to the
+    # 7680 video bytes (the render dispatches by profile).
     return avf.demux_apac_video(frame), info["profile"]
 
 

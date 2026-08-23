@@ -44,9 +44,9 @@ AUDIO_OFF2 = 52
 
 
 def frame_size(profile):
-    """Bytes per muxed frame for a video profile."""
-    return FRAME_SIZE_C80 if profile in (PROFILE_C80M3, PROFILE_C80M4) \
-        else FRAME_SIZE_APAC
+    """Bytes per muxed frame. All profiles share the APAC container
+    (8704 B) - C80 differs only in video content, not the mux."""
+    return FRAME_SIZE_APAC
 
 
 def is_c80(profile):

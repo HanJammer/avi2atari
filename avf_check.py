@@ -144,10 +144,10 @@ def validate(path, has_header, system):
     else:
         payload = data
 
-    # C80 profiles use 8192-byte frames (7680 raw video + 512 linear
-    # audio, no pads); APAC keeps the classic 8704-byte mux.
-    c80 = bool(meta) and avf.is_c80(meta["profile"])
-    frame_size = 8192 if c80 else FRAME_SIZE
+    # Both profiles share the APAC container (8704-byte frames, same
+    # block/pad + audio mux). C80 differs only in video content, so the
+    # same structural checks apply.
+    frame_size = FRAME_SIZE
 
     if len(payload) % frame_size != 0:
         problems.append(
@@ -172,8 +172,6 @@ def validate(path, has_header, system):
 
     for idx in range(0, n_frames, sample_step):
         frame = payload[idx * frame_size:(idx + 1) * frame_size]
-        if c80:
-            continue        # C80 frames carry no pad structure to verify
         problems += check_video_block_padding(frame, idx)
         problems += check_audio_block_padding(frame, idx, is_pal)
         sample_count += 1

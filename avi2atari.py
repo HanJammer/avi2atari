@@ -666,14 +666,12 @@ def process_single_file(input_file, system, output_file, config):
             if config['avf2'] and frame_count <= poster_idx:
                 poster_data = encoded_vid.flatten().tobytes()
 
-            if c80:
-                # C80 mux: raw video, then the audio chunk linearly in a
-                # 512-byte field (the kernel plays one sample per scan line)
-                fout.write(encoded_vid.tobytes())
-                afield = bytes(encoded_aud) + b'2' * (512 - len(encoded_aud))
-                fout.write(afield)
-            else:
-                mux_frame(fout, encoded_vid, encoded_aud, is_pal)
+            # Both profiles share the exact APAC container (8704-byte
+            # frames, same block/pad + audio mux). C80 differs ONLY in the
+            # video CONTENT (COL80 M4 cells vs APAC luma/chroma) - so the
+            # proven movplay streaming kernel and audio path are reused as
+            # is, and the player just enables Mode 4 for a C80 profile.
+            mux_frame(fout, encoded_vid, encoded_aud, is_pal)
 
             # --- INTEGRITY CHECK ---
             # Verifies if the file size matches the expected byte count exactly.
@@ -682,8 +680,7 @@ def process_single_file(input_file, system, output_file, config):
             # python -O does not silently disable the safety net.
             current_pos = fout.tell()
             header_offset = (16 * 512) if not config['no_header'] else 0
-            fsz = C80_FRAME_SIZE if c80 else FRAME_SIZE_BYTES
-            expected_pos = header_offset + (frame_count + 1) * fsz
+            expected_pos = header_offset + (frame_count + 1) * FRAME_SIZE_BYTES
 
             if current_pos != expected_pos:
                 raise RuntimeError(

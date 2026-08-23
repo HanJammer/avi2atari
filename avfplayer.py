@@ -195,8 +195,8 @@ class AVFPlayer:
         return self.palette[indices]
 
     def _load_process_full(self):
-        # 1. READ FILE. C80 profiles use 8192-byte frames (7680 raw video +
-        # 512 linear audio); APAC keeps the classic 8704-byte mux.
+        # 1. READ FILE. Both profiles use the classic 8704-byte APAC mux
+        # (C80 differs only in video content, decoded by _blit_frame_c80).
         frame_size = avf.frame_size(self.profile)
         size = os.path.getsize(self.filename)
         with open(self.filename, "rb") as f:
@@ -206,22 +206,14 @@ class AVFPlayer:
         num_frames = len(raw) // frame_size
         video_frames = []
         audio_chunks = []
-        
+
         off1, off2 = (120, 52) if self.is_pal else (70, 52)
         audio_len = 312 if self.is_pal else 262
-        
+
         # 2. DEMUX LOOP
         for i in range(num_frames):
             base = i * frame_size
             chunk = raw[base : base+frame_size]
-
-            if self.profile == 2:
-                # C80: raw video, then the audio chunk linearly
-                v = np.frombuffer(chunk[:7680], dtype=np.uint8).reshape(HEIGHT, 40)
-                video_frames.append(v)
-                ac = np.frombuffer(chunk[7680:7680+audio_len], dtype=np.uint8).copy()
-                audio_chunks.append(ac)
-                continue
 
             # --- Video extraction ---
             v = np.zeros((HEIGHT, 40), dtype=np.uint8)
