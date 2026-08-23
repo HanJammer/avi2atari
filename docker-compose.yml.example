@@ -1,10 +1,17 @@
 # AVI2ATARI AVF Suite - example compose for a traefik-fronted deployment.
 # Copy to docker-compose.yml, copy .env.example to .env, then `docker compose up -d`.
 #
-# Assumes an existing external traefik network `traefik_public` and that
-# traefik terminates TLS. No certresolver is set here (the maintainer runs
-# traefik locally with its own certs); uncomment the tls line if yours
-# uses one.
+# Assumes an existing external traefik network `traefik_public`.
+#
+# A plain "404 page not found" (traefik's own page, not the app's JSON
+# {"detail":"Not Found"}) means traefik saw the container but NO ROUTER
+# MATCHED. The two usual causes, both handled below:
+#   1. Entrypoint NAME mismatch - traefik's HTTPS entrypoint might be
+#      "websecure", "https", "web-secure"... Set TRAEFIK_ENTRYPOINT in .env
+#      to whatever your traefik static config actually calls it.
+#   2. On a TLS entrypoint the router must declare TLS. tls=true is set
+#      below (traefik serves its default/own cert). If instead you use an
+#      ACME resolver, comment tls=true and uncomment the certresolver line.
 services:
   avi2atari:
     build: .
@@ -20,9 +27,16 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik_public"
       - "traefik.http.routers.avi2atari.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.avi2atari.entrypoints=websecure"
+      - "traefik.http.routers.avi2atari.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.avi2atari.tls=true"
       # - "traefik.http.routers.avi2atari.tls.certresolver=le"
       - "traefik.http.services.avi2atari.loadbalancer.server.port=8000"
+
+      # --- plain-HTTP fallback (uncomment to also serve on the HTTP
+      #     entrypoint - handy to prove routing works without TLS) ---
+      # - "traefik.http.routers.avi2atari-http.rule=Host(`${DOMAIN}`)"
+      # - "traefik.http.routers.avi2atari-http.entrypoints=web"
+      # - "traefik.http.routers.avi2atari-http.service=avi2atari"
 
 networks:
   traefik_public:
