@@ -1,6 +1,6 @@
 # avi2atari
 
-A modern, all-in-one Python tool for converting video files into the **AVF** format used by **movplay** or [**AVFplay**](https://github.com/jhusak/avgcart_avfplay) on **Atari 8-bit** computers.
+A modern, all-in-one Python tool for converting video files into the **AVF** format used by [**AV2PLAY**](https://github.com/HanJammer/av2play), original **movplay** or [**AVFplay**](https://github.com/jhusak/avgcart_avfplay) on **Atari 8-bit** computers.
 
 ## Why use this tool?
 
