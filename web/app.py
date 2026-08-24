@@ -40,6 +40,18 @@ def _env_bool(name, default):
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _converter_version():
+    """avi2atari's __version__ without importing it (numpy/numba-free)."""
+    try:
+        with open(CONVERTER, encoding="utf-8") as f:
+            m = re.search(r'__version__\s*=\s*"([^"]+)"', f.read())
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+CONVERTER_VERSION = _converter_version()
+
 YOUTUBE_ENABLED = _env_bool("YOUTUBE_ENABLED", False)
 LOG_REQUESTS = _env_bool("LOG_REQUESTS", True)
 SERVER_MODE = _env_bool("SERVER_MODE", False)
@@ -375,7 +387,8 @@ def frame_video(data, info, index):
 def api_config():
     return {"youtube_enabled": YOUTUBE_ENABLED, "server_mode": SERVER_MODE,
             "local_playback": LOCAL_PLAYBACK, "max_upload_mb": MAX_UPLOAD_MB,
-            "suite_version": avf.__version__}
+            "suite_version": avf.__version__,
+            "converter_version": CONVERTER_VERSION}
 
 
 @app.post("/api/convert")

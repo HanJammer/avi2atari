@@ -85,7 +85,7 @@
 </head>
 <body>
 <header>
-  <h1>AVI2ATARI &middot; AVF Suite</h1>
+  <h1 id="appTitle">AVI2ATARI &middot; AVF Suite</h1>
   <p>Video for the Atari 8-bit &middot; APAC &amp; true-colour AVF-C80</p>
 </header>
 <main>
@@ -114,7 +114,7 @@
         <select id="cvProfile">
           <option value="apac">APAC (every Atari)</option>
           <option value="c80m4">AVF-C80 M4 (GTIA2RGB)</option>
-          <option value="c80btc">AVF-C80 + BTC subpixels (GTIA2RGB, experimental)</option>
+          <option value="c80btc">AVF-C80 M4 BTC (GTIA2RGB)</option>
         </select></div>
     </div>
     <div id="c80warn" class="disc" style="display:none;border-color:var(--accent)">
@@ -249,6 +249,11 @@ const $ = s => document.querySelector(s);
 
 fetch("/api/config").then(r=>r.json()).then(c=>{
   CFG = c;
+  if (c.converter_version) {
+    $("#appTitle").innerHTML =
+      "AVI2ATARI " + c.converter_version + " &middot; AVF Suite";
+    document.title = "AVI2ATARI " + c.converter_version + " AVF Suite";
+  }
   if (c.youtube_enabled) $("#urlWrap").style.display = "block";
   if (c.server_mode) {
     const d = $("#disclaimer"); d.style.display = "block";

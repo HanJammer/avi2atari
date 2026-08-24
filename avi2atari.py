@@ -655,6 +655,12 @@ def process_single_file(input_file, system, output_file, config):
     # do the matrix conversion during the scale stage costs nothing extra.
     c80 = config['profile'] == PROFILE_C80M4
     c80_btc = c80 and config.get('c80_btc', False)
+    # --denoise: temporal-only hqdn3d at SOURCE resolution, ahead of the
+    # scaler. Spatial strengths are 0 (no blur); the temporal pass averages
+    # what does not move, killing the source noise that drives per-frame
+    # cell re-decisions (glyph shimmer) in the C80/BTC encoder - and it
+    # helps APAC dither stability just the same.
+    denoise_filter = "hqdn3d=0:0:6:6," if config.get('denoise') else ""
     if c80:
         # C80M4: true-colour cells; the FPGA renders RGB directly, so no
         # BT.601 trip - plain RGB from the scaler. BTC feeds the encoder a
@@ -665,7 +671,7 @@ def process_single_file(input_file, system, output_file, config):
                             f"pad={c80_w}:{c80_h}:(ow-iw)/2:(oh-ih)/2:black")
         else:
             scale_filter = f"scale={c80_w}:{c80_h}:flags=lanczos"
-        vf_chain = (f"{scale_filter},"
+        vf_chain = (f"{denoise_filter}{scale_filter},"
                     f"eq=contrast={config['contrast']},"
                     f"hue=s={config['saturation']},"
                     f"fps={fps},format=rgb24")
@@ -694,7 +700,7 @@ def process_single_file(input_file, system, output_file, config):
     # Both filters are no-ops at 1.0, so default behaviour is preserved.
     if not c80:
         vf_chain = (
-            f"{scale_filter},"
+            f"{denoise_filter}{scale_filter},"
             f"eq=contrast={config['contrast']},"
             f"hue=s={config['saturation']},"
             f"fps={fps},format=yuv420p"
@@ -983,6 +989,11 @@ def main():
     parser.add_argument("--allow-slow", action="store_true",
                         help="Allow --profile c80btc without numba (the pure-Python "
                              "exhaustive search takes HOURS per minute of video)")
+    parser.add_argument("--denoise", action="store_true",
+                        help="Temporal-only denoise of the SOURCE (hqdn3d, no "
+                             "spatial blur) before scaling. Reduces glyph "
+                             "shimmer on noisy/grainy material for every "
+                             "profile; static detail stays sharp.")
     parser.add_argument("--btc-stability", type=float, default=0.10, metavar="K",
                         help="c80btc temporal hysteresis: keep a cell's previous "
                              "mask+colours while their error stays within "
@@ -1047,6 +1058,7 @@ def main():
         'profile': PROFILE_C80M4 if args.profile in ('c80m4', 'c80btc') else PROFILE_APAC,
         'c80_btc': args.profile == 'c80btc',
         'btc_stability': max(0.0, args.btc_stability),
+        'denoise': args.denoise,
         'title': args.title,
         'author': args.author,
         'comment': args.comment,
