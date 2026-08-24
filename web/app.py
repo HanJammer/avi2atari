@@ -171,6 +171,8 @@ def _conv_args(inp, out_base, o, poster):
             "--out", out_base, "--aspect", o.get("aspect", "fit")]
     if o["profile"] in ("c80m4", "c80btc"):
         argv += ["--profile", o["profile"]]
+        if o["profile"] == "c80btc" and o.get("btc_stability") is not None:
+            argv += ["--btc-stability", str(o["btc_stability"])]
     elif o.get("avf2", True):
         argv += ["--avf2"]
     for k in ("title", "author", "comment"):
@@ -244,6 +246,9 @@ def _job_convert_urls(job, urls, opts):
                         opts["system"], "--out", os.path.join(outdir, f"url{i}")]
                 if opts["profile"] in ("c80m4", "c80btc"):
                     argv += ["--profile", opts["profile"]]
+                    if opts["profile"] == "c80btc" \
+                            and opts.get("btc_stability") is not None:
+                        argv += ["--btc-stability", str(opts["btc_stability"])]
                 elif opts.get("avf2", True):
                     argv += ["--avf2"]
                 for k in ("title", "author", "comment"):
@@ -382,6 +387,7 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
                       saturation: float = Form(1.0), loudnorm: bool = Form(True),
                       volume: float = Form(12.0), poster_mode: str = Form("none"),
                       poster_frame: str = Form(""),
+                      btc_stability: float = Form(None),
                       poster_image: UploadFile = File(None)):
     payloads, total = [], 0
     for f in files:
@@ -393,6 +399,7 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
     audit(request, f"convert:{system}:{profile}:{len(payloads)}f",
           ",".join(n for n, _ in payloads))
     opts = dict(system=system, profile=profile, avf2=avf2, title=title,
+                btc_stability=btc_stability,
                 author=author, comment=comment, aspect=aspect,
                 contrast=contrast, saturation=saturation, loudnorm=loudnorm,
                 volume=volume, poster_mode=poster_mode)
@@ -409,7 +416,8 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
 async def api_convert_url(request: Request, urls: str = Form(...),
                           system: str = Form("PAL"), profile: str = Form("apac"),
                           avf2: bool = Form(True), title: str = Form(""),
-                          author: str = Form(""), comment: str = Form("")):
+                          author: str = Form(""), comment: str = Form(""),
+                          btc_stability: float = Form(None)):
     if not YOUTUBE_ENABLED:
         raise HTTPException(403, "URL downloading is disabled on this server")
     url_list = [u.strip() for u in urls.splitlines() if u.strip()]
@@ -417,6 +425,7 @@ async def api_convert_url(request: Request, urls: str = Form(...),
         raise HTTPException(400, "no URLs given")
     audit(request, f"convert_url:{system}:{len(url_list)}", " ".join(url_list))
     opts = dict(system=system, profile=profile, avf2=avf2, title=title,
+                btc_stability=btc_stability,
                 author=author, comment=comment)
     return {"job": _spawn(_job_convert_urls, url_list, opts)}
 

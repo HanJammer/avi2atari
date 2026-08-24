@@ -148,6 +148,12 @@
       <div class="slider"><input id="cvContrast" type="range" min="0.5" max="2" step="0.05" value="1"></div>
       <label>Saturation <span class="pill" id="cvSatV">1.00</span></label>
       <div class="slider"><input id="cvSat" type="range" min="0" max="2" step="0.05" value="1"></div>
+      <div id="btcStabRow" style="display:none">
+        <label>BTC stability <span class="pill" id="cvBtcStabV">0.10</span></label>
+        <div class="slider"><input id="cvBtcStab" type="range" min="0" max="0.5" step="0.05" value="0.10"></div>
+        <small class="hint">Temporal hysteresis: higher = calmer, sharper-looking
+        static detail, but stale cells may linger on slow fades. 0 = off.</small>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Audio</legend>
@@ -316,10 +322,13 @@ $("#cvPoster").onchange = e => {
   $("#cvPosterFrameWrap").style.display = e.target.value==="frame"?"block":"none";
   $("#cvPosterImgWrap").style.display = e.target.value==="image"?"block":"none";
 };
-$("#cvProfile").onchange = e =>
+$("#cvProfile").onchange = e => {
   $("#c80warn").style.display = e.target.value.indexOf("c80")===0 ? "block":"none";
+  $("#btcStabRow").style.display = e.target.value==="c80btc" ? "block":"none";
+};
 $("#cvContrast").oninput = e => $("#cvContrastV").textContent = (+e.target.value).toFixed(2);
 $("#cvSat").oninput = e => $("#cvSatV").textContent = (+e.target.value).toFixed(2);
+$("#cvBtcStab").oninput = e => $("#cvBtcStabV").textContent = (+e.target.value).toFixed(2);
 $("#cvVol").oninput = e => $("#cvVolV").textContent = e.target.value+" dB";
 $("#cvLoud").onchange = e => { const off=e.target.checked;
   $("#cvVol").disabled=off; $("#cvVolWrap").classList.toggle("off",off); };
@@ -327,6 +336,7 @@ function convCommon(fd){
   fd.append("system",$("#cvSystem").value); fd.append("profile",$("#cvProfile").value);
   fd.append("avf2",$("#cvAvf2").checked); fd.append("title",$("#cvTitle").value);
   fd.append("author",$("#cvAuthor").value); fd.append("comment",$("#cvComment").value);
+  fd.append("btc_stability",$("#cvBtcStab").value);
 }
 function onConverted(blob, name){
   dlBlob(blob, name);
