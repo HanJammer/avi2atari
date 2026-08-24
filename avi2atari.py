@@ -44,17 +44,21 @@ import numpy as np
 import math
 try:
     from numba import jit
+    NUMBA_OK = True
 except ImportError:
     # Numba is an accelerator, not a requirement: fall back to plain Python
     # (an order of magnitude slower, but correct) so mismatched numpy/numba
-    # installs never block a conversion outright.
+    # installs never block a conversion outright. EXCEPTION: the c80btc
+    # exhaustive search is ~1000x slower un-jitted (~7.5 s/frame = 6+ hours
+    # per minute of PAL video) - main() refuses it without --allow-slow.
+    NUMBA_OK = False
     def jit(*_args, **_kwargs):
         def _deco(fn):
             return fn
         return _deco
     print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
-__version__ = "0.7"
+__version__ = "0.8"
 
 import avf_format as avf
 
@@ -81,11 +85,13 @@ SECONDS_PER_FRAME_NTSC = avf.SECONDS_PER_FRAME_NTSC
 
 
 # --- AVF2 METADATA HEADER --- (built by the shared avf_format lib)
-def build_avf2_header(is_pal, frame_count, poster_data, meta, profile=PROFILE_APAC):
+def build_avf2_header(is_pal, frame_count, poster_data, meta,
+                      profile=PROFILE_APAC, c80_btc=False):
     # Thin wrapper over avf_format; the converter stamps its own version.
     m = dict(meta or {})
     m["converter"] = f"avi2atari {__version__}"
-    return avf.build_avf2_header(is_pal, frame_count, poster_data, m, profile)
+    return avf.build_avf2_header(is_pal, frame_count, poster_data, m, profile,
+                                 c80_btc)
 
 
 def probe_duration_seconds(input_file):
@@ -175,6 +181,120 @@ def encode_c80m4_frame(rgb):
             out[base + 80 + x] = (q[top, x, 0] << 4) | q[bot, x, 0]
             out[base + 160 + x] = (q[top, x, 1] << 4) | q[bot, x, 1]
             out[base + 240 + x] = (q[top, x, 2] << 4) | q[bot, x, 2]
+    return out.reshape((192, 40))
+
+# --- C80/BTC VIDEO KERNEL (Numba JIT) ---
+@jit(nopython=True, fastmath=True)
+def encode_c80btc_frame(rgb, leg_bg, leg_fg):
+    # rgb: float32 (96, 160, 3), 0..255 - the 160x96 subpixel source.
+    # leg_bg/leg_fg: uint8 (24, 80, 3) RGB444 - the HALFBLOCK BASELINE for
+    # the same 160x96 target (the classic encoder run on a box-2x2 downscale
+    # of it). NOTE: this is NOT byte-identical to a direct `--profile c80m4`
+    # run, whose ffmpeg scales the source straight to 80x48 with lanczos -
+    # the guarantee below is relative to the 160x96 reference, not to the
+    # old pipeline's bytes (Codex implementation review, P1).
+    #
+    # Per 2x4-subpixel cell: exhaustive search over the 128 unique
+    # partitions (mask and complement describe the same split), colours =
+    # per-side means QUANTISED to RGB444 before the error is measured
+    # (SSE in 0..255 RGB). The halfblock baseline (mask $F0 + its colours)
+    # seeds the search, so the result can never score worse than that
+    # baseline under this error function. Finally the free complement+swap
+    # picks the BG/FG orientation that the legacy half-block fallback
+    # (old players: BG top / FG bottom) renders best.
+    # Stateless by design (Codex review: temporal damping is phase 2).
+    #
+    # Working state lives in small typed arrays (best/cand), not scalar
+    # locals: numba 0.60's scalar SSA unification mistyped the scalar
+    # version (or_(float64, int64) at the nibble pack).
+    out = np.zeros(7680, dtype=np.uint8)
+    px = np.zeros((8, 3), dtype=np.float32)
+    best = np.zeros(6, dtype=np.int32)    # bg r,g,b | fg r,g,b
+    cand = np.zeros(6, dtype=np.int32)
+    for cy in range(24):
+        base = cy * 320
+        for cx in range(80):
+            for r in range(4):
+                for c in range(2):
+                    for k in range(3):
+                        px[r * 2 + c, k] = rgb[cy * 4 + r, cx * 2 + c, k]
+
+            # seed: the classic C80 cell (mask $F0, legacy colours)
+            best_mask = 0xF0
+            for k in range(3):
+                best[k] = leg_bg[cy, cx, k]
+                best[3 + k] = leg_fg[cy, cx, k]
+            best_err = 0.0
+            for i in range(8):
+                o = 3 if i >= 4 else 0     # $F0: bits 4-7 = FG
+                for k in range(3):
+                    d = px[i, k] - best[o + k] * 17.0
+                    best_err += d * d
+
+            # exhaustive: masks 0..127 cover every partition exactly once
+            # (bit 7 clear -> subpixel 7 always on the "clear" side)
+            for m in range(128):
+                ns = 0
+                s0 = 0.0; s1 = 0.0; s2 = 0.0
+                c0 = 0.0; c1 = 0.0; c2 = 0.0
+                for i in range(8):
+                    if (m >> i) & 1:
+                        s0 += px[i, 0]; s1 += px[i, 1]; s2 += px[i, 2]
+                        ns += 1
+                    else:
+                        c0 += px[i, 0]; c1 += px[i, 1]; c2 += px[i, 2]
+                nc = 8 - ns
+                if nc > 0:
+                    c0 /= nc; c1 /= nc; c2 /= nc
+                if ns > 0:
+                    s0 /= ns; s1 /= ns; s2 /= ns
+                else:
+                    s0 = c0; s1 = c1; s2 = c2
+                # quantise both colours to RGB444 first, judge after
+                cand[3] = min(15, max(0, int(s0 / 17.0 + 0.5)))
+                cand[4] = min(15, max(0, int(s1 / 17.0 + 0.5)))
+                cand[5] = min(15, max(0, int(s2 / 17.0 + 0.5)))
+                cand[0] = min(15, max(0, int(c0 / 17.0 + 0.5)))
+                cand[1] = min(15, max(0, int(c1 / 17.0 + 0.5)))
+                cand[2] = min(15, max(0, int(c2 / 17.0 + 0.5)))
+                err = 0.0
+                for i in range(8):
+                    o = 3 if (m >> i) & 1 else 0
+                    for k in range(3):
+                        d = px[i, k] - cand[o + k] * 17.0
+                        err += d * d
+                    if err >= best_err:
+                        break
+                if err < best_err:
+                    best_err = err
+                    best_mask = m
+                    for k in range(6):
+                        best[k] = cand[k]
+
+            # orientation: complement+swap is free for BTC-aware playback;
+            # pick the one the legacy half-block fallback renders better
+            # (old players show BG on the top rows, FG on the bottom rows)
+            fa = 0.0
+            fb = 0.0
+            for i in range(8):
+                oa = 0 if i < 4 else 3
+                ob = 3 if i < 4 else 0
+                for k in range(3):
+                    d = px[i, k] - best[oa + k] * 17.0
+                    e = px[i, k] - best[ob + k] * 17.0
+                    fa += d * d
+                    fb += e * e
+            if fb < fa:
+                best_mask = best_mask ^ 0xFF
+                for k in range(3):
+                    t = best[k]
+                    best[k] = best[3 + k]
+                    best[3 + k] = t
+
+            out[base + cx] = best_mask
+            out[base + 80 + cx] = (best[0] << 4) | best[3]
+            out[base + 160 + cx] = (best[1] << 4) | best[4]
+            out[base + 240 + cx] = (best[2] << 4) | best[5]
     return out.reshape((192, 40))
 
 # --- VIDEO KERNEL (Numba JIT) ---
@@ -496,19 +616,26 @@ def process_single_file(input_file, system, output_file, config):
     # subtly off greens/skin tones if fed through unconverted. Letting libswscale
     # do the matrix conversion during the scale stage costs nothing extra.
     c80 = config['profile'] == PROFILE_C80M4
+    c80_btc = c80 and config.get('c80_btc', False)
     if c80:
-        # C80M4: 80x48 true-colour cells; the FPGA renders RGB directly,
-        # so no BT.601 trip - plain RGB from the scaler.
+        # C80M4: true-colour cells; the FPGA renders RGB directly, so no
+        # BT.601 trip - plain RGB from the scaler. BTC feeds the encoder a
+        # 160x96 subpixel grid, classic C80 an 80x48 pixel grid.
+        c80_w, c80_h = (160, 96) if c80_btc else (80, 48)
         if config['aspect'] == 'fit':
-            scale_filter = ("scale=80:48:force_original_aspect_ratio=decrease:flags=lanczos,"
-                            "pad=80:48:(ow-iw)/2:(oh-ih)/2:black")
+            scale_filter = (f"scale={c80_w}:{c80_h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                            f"pad={c80_w}:{c80_h}:(ow-iw)/2:(oh-ih)/2:black")
         else:
-            scale_filter = "scale=80:48:flags=lanczos"
+            scale_filter = f"scale={c80_w}:{c80_h}:flags=lanczos"
         vf_chain = (f"{scale_filter},"
                     f"eq=contrast={config['contrast']},"
                     f"hue=s={config['saturation']},"
                     f"fps={fps},format=rgb24")
-        print("    Profile: AVF-C80 M4 (GTIA2RGB COL80, 80x48 RGB444)")
+        if c80_btc:
+            print("    Profile: AVF-C80 M4 + BTC subcell masks "
+                  "(GTIA2RGB COL80, 160x96 / 2x RGB444 per cell)")
+        else:
+            print("    Profile: AVF-C80 M4 (GTIA2RGB COL80, 80x48 RGB444)")
     common_scale_opts = "flags=lanczos:in_color_matrix=auto:out_color_matrix=bt601"
     if config['aspect'] == 'fit':
         # Preserve source aspect ratio, pad with black to 160x192 (letter/pillarbox).
@@ -628,7 +755,10 @@ def process_single_file(input_file, system, output_file, config):
 
     try:
         while True:
-            if c80:
+            if c80_btc:
+                rgb_data = f_vid.read(160 * 96 * 3)
+                if len(rgb_data) != 46080: break
+            elif c80:
                 rgb_data = f_vid.read(80 * 48 * 3)
                 if len(rgb_data) != 11520: break
             else:
@@ -651,7 +781,25 @@ def process_single_file(input_file, system, output_file, config):
 
             a_chunk = np.frombuffer(a_data, dtype=np.uint8)
 
-            if c80:
+            if c80_btc:
+                rgb96 = np.frombuffer(rgb_data, dtype=np.uint8).reshape((96, 160, 3)).astype(np.float32)
+                # Halfblock-baseline pass first: box-2x2 the 160x96 target to
+                # 80x48 and run the classic encoder (with its serpentine FS
+                # dither) on THAT - an optimal-halfblock baseline for the
+                # 160x96 reference, not a byte-identical `--profile c80m4`
+                # result (which scales the source straight to 80x48). Its
+                # output doubles as the search seed AND the classic-encoded
+                # poster (the poster is never BTC - spec section 5).
+                rgb48 = rgb96.reshape(48, 2, 80, 2, 3).mean(axis=(1, 3))
+                classic_vid = encode_c80m4_frame(rgb48)
+                ca = classic_vid.reshape(24, 8, 40)
+                leg = np.stack([ca[:, 2:4, :].reshape(24, 80),
+                                ca[:, 4:6, :].reshape(24, 80),
+                                ca[:, 6:8, :].reshape(24, 80)], -1)
+                leg_bg = ((leg >> 4) & 0xF).astype(np.uint8)
+                leg_fg = (leg & 0xF).astype(np.uint8)
+                encoded_vid = encode_c80btc_frame(rgb96, leg_bg, leg_fg)
+            elif c80:
                 rgb = np.frombuffer(rgb_data, dtype=np.uint8).reshape((48, 80, 3)).astype(np.float32)
                 encoded_vid = encode_c80m4_frame(rgb)
             else:
@@ -663,8 +811,10 @@ def process_single_file(input_file, system, output_file, config):
 
             # AVF2 poster: keep overwriting until the chosen frame is reached,
             # so a clip shorter than the poster time still gets its last frame.
+            # BTC streams store the CLASSIC C80 encoding as the poster
+            # (spec section 5: thumbnails need no BTC awareness).
             if config['avf2'] and frame_count <= poster_idx:
-                poster_data = encoded_vid.flatten().tobytes()
+                poster_data = (classic_vid if c80_btc else encoded_vid).flatten().tobytes()
 
             # Both profiles share the exact APAC container (8704-byte
             # frames, same block/pad + audio mux). C80 differs ONLY in the
@@ -705,7 +855,8 @@ def process_single_file(input_file, system, output_file, config):
         # 16 sectors, now that frame_count and the poster are known.
         if config['avf2'] and frame_count > 0:
             header = build_avf2_header(is_pal, frame_count, poster_data, avf2_meta,
-                                       config['profile'])
+                                       config['profile'],
+                                       config.get('c80_btc', False))
             fout.seek(0)
             fout.write(header)
             print(f"    AVF2 header: title='{avf2_meta['title']}', "
@@ -752,12 +903,14 @@ def main():
                                       "(ignored in batch/list mode)")
     parser.add_argument("--version", action="version", version=f"avi2atari {__version__}")
     parser.add_argument("--no-header", action="store_true", help="Disable 8KB header (not recommended!)")
-    parser.add_argument("--profile", choices=['apac', 'c80m4'], default='apac',
-                        help="Video profile: 'apac' (classic, every Atari) or 'c80m4' "
-                             "(AVF-C80: GTIA2RGB COL80 Mode 4, 80x48 true-colour RGB444; "
-                             "implies --avf2). c80m4 needs a GTIA2RGB and the AV2PLAY "
+    parser.add_argument("--profile", choices=['apac', 'c80m4', 'c80btc'], default='apac',
+                        help="Video profile: 'apac' (classic, every Atari), 'c80m4' "
+                             "(AVF-C80: GTIA2RGB COL80 Mode 4, 80x48 true-colour RGB444) "
+                             "or 'c80btc' (AVF-C80 + BTC subcell masks: 160x96 detail, "
+                             "two RGB444 colours per cell; EXPERIMENTAL). Both C80 "
+                             "profiles imply --avf2, need a GTIA2RGB and the AV2PLAY "
                              "player (https://github.com/HanJammer/av2play) for true "
-                             "colour; it also plays in legacy AVF players, but the "
+                             "colour; they also play in legacy AVF players, but the "
                              "colours will be wrong.")
 
     # AVF2 metadata header (see docs/AVF2_HEADER.md). Fully backward
@@ -775,6 +928,9 @@ def main():
     # Image Options
     parser.add_argument("--saturation", type=float, default=1.0, help="Color saturation (0 = black & white, 1.0 = original, 2.0 = boosted; default: 1.0)")
     parser.add_argument("--contrast", type=float, default=1.0, help="Contrast adjustment (default: 1.0)")
+    parser.add_argument("--allow-slow", action="store_true",
+                        help="Allow --profile c80btc without numba (the pure-Python "
+                             "exhaustive search takes HOURS per minute of video)")
     parser.add_argument("--aspect", choices=['stretch', 'fit'], default='stretch',
                         help="How to fit source into 160x192: 'stretch' (legacy default, "
                              "fills the frame) or 'fit' (preserves source aspect ratio with "
@@ -803,14 +959,22 @@ def main():
         print("ERROR: --avf2 requires the 8KB header; it cannot be combined with --no-header.")
         sys.exit(1)
 
-    if args.profile == 'c80m4':
+    if args.profile in ('c80m4', 'c80btc'):
         if args.no_header:
-            print("ERROR: --profile c80m4 requires the AVF2 header (players must be able "
-                  "to identify the profile); it cannot be combined with --no-header.")
+            print(f"ERROR: --profile {args.profile} requires the AVF2 header (players must "
+                  "be able to identify the profile); it cannot be combined with --no-header.")
             sys.exit(1)
         if not args.avf2:
-            print("NOTE: --profile c80m4 implies --avf2 (the profile id lives in the header).")
+            print(f"NOTE: --profile {args.profile} implies --avf2 (the profile id lives in the header).")
             args.avf2 = True
+
+    if args.profile == 'c80btc' and not NUMBA_OK and not args.allow_slow:
+        print("ERROR: --profile c80btc needs numba - the un-jitted exhaustive "
+              "search runs at ~7.5 s per FRAME (6+ hours per minute of PAL "
+              "video). Install the pinned dependencies:")
+        print("           pip install -r requirements.txt")
+        print("       or pass --allow-slow if you really mean it.")
+        sys.exit(1)
 
     # Config dictionary
     config = {
@@ -821,7 +985,8 @@ def main():
         'volume': args.volume,
         'loudnorm': args.loudnorm,
         'avf2': args.avf2,
-        'profile': PROFILE_C80M4 if args.profile == 'c80m4' else PROFILE_APAC,
+        'profile': PROFILE_C80M4 if args.profile in ('c80m4', 'c80btc') else PROFILE_APAC,
+        'c80_btc': args.profile == 'c80btc',
         'title': args.title,
         'author': args.author,
         'comment': args.comment,

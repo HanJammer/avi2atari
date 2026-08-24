@@ -114,6 +114,7 @@
         <select id="cvProfile">
           <option value="apac">APAC (every Atari)</option>
           <option value="c80m4">AVF-C80 M4 (GTIA2RGB)</option>
+          <option value="c80btc">AVF-C80 + BTC subpixels (GTIA2RGB, experimental)</option>
         </select></div>
     </div>
     <div id="c80warn" class="disc" style="display:none;border-color:var(--accent)">
@@ -316,7 +317,7 @@ $("#cvPoster").onchange = e => {
   $("#cvPosterImgWrap").style.display = e.target.value==="image"?"block":"none";
 };
 $("#cvProfile").onchange = e =>
-  $("#c80warn").style.display = e.target.value==="c80m4" ? "block":"none";
+  $("#c80warn").style.display = e.target.value.indexOf("c80")===0 ? "block":"none";
 $("#cvContrast").oninput = e => $("#cvContrastV").textContent = (+e.target.value).toFixed(2);
 $("#cvSat").oninput = e => $("#cvSatV").textContent = (+e.target.value).toFixed(2);
 $("#cvVol").oninput = e => $("#cvVolV").textContent = e.target.value+" dB";

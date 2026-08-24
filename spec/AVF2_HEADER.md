@@ -1,9 +1,18 @@
-# AVF2 - Metadata Header Extension (Proposal, draft 1)
+# AVF2 - Metadata Header Extension
 
-Status: **implemented in the PC tools** (avi2atari 0.4 `--avf2` writer,
-avf_check 0.4 validator, avfplayer 0.3 reader) - layout below is now the
-working spec, version-frozen as header_version 1. Not yet regression-tested
-on real hardware with stock AVFPLAY (MVP step 5).
+Status:
+
+- **AVF2 v1 / classic C80**: implemented in the PC tools (avi2atari
+  `--avf2` writer, avf_check validator, avfplayer reader) and **validated
+  on real hardware** with AVFPLAY/AV2PLAY.
+- **AVF2 v2 / C80_BTC** (section 5): **PC implemented and round-trip
+  tested; the Atari-side procedural font and hardware validation are
+  pending** (AVFPLAY phase 3).
+
+The layout below is the working spec. header_version 1 is the baseline;
+**header_version 2** adds exactly one thing: flags bit 2 (`C80_BTC`,
+section 5). A version-1 reader that follows the versioning rules plays
+version-2 files unchanged.
 
 ## 1. Motivation
 
@@ -57,9 +66,9 @@ the Atari, writers SHOULD restrict text to 0x20-0x7A.
 | Offset | Size | Field            | Contents |
 |-------:|-----:|------------------|----------|
 | 0      | 4    | magic            | `"AVF2"` (41 56 46 32) |
-| 4      | 1    | header_version   | 1 |
+| 4      | 1    | header_version   | 1, or 2 when flags bit 2 is set |
 | 5      | 1    | system           | 0 = PAL, 1 = NTSC |
-| 6      | 1    | flags            | bit 0: poster present; bit 1: poster encoded in the video profile (non-APAC); bits 2-7 reserved (0) |
+| 6      | 1    | flags            | bit 0: poster present; bit 1: poster encoded in the video profile (non-APAC); bit 2: C80_BTC subcell masks (header_version >= 2, profile 2 only - section 5); bits 3-7 reserved (0) |
 | 7      | 1    | profile          | video profile: 0 = APAC, 1 = C80M3 (reserved), 2 = C80M4 (GTIA2RGB COL80 Mode 4). Legacy/v1 and pre-0.5 AVF2 files carry 0. |
 | 8      | 4    | frame_count      | number of 8704-byte frames (u32) |
 | 12     | 4    | duration_ms      | playback length in milliseconds (u32; redundant with frame_count, precomputed for 6502 convenience) |
@@ -150,7 +159,35 @@ See [PLAYER_CONCEPT.md](PLAYER_CONCEPT.md) - the header is designed so that
 the menu's right-hand panel is: sector 0 -> text fields, sectors 1-15 ->
 poster render.
 
-## 5. MVP and sequencing
+## 5. header_version 2 - C80_BTC subcell masks (flags bit 2)
+
+An AVF-C80 M4 refinement that uses the per-cell CHARACTER byte - constant
+in classic C80 - as a **direct-mapped subpixel mask**. Signalled by
+`header_version = 2`, `profile = 2` (unchanged!), `flags bit 2 = 1`.
+The container, frame size, mux and bandwidth are identical to classic C80.
+
+- Each 8x8 cell is divided into **2 columns x 4 rows of subpixels** (each
+  subpixel = 4x2 font pixels). The char byte is the mask: **bit i covers
+  subpixel row `i/2` (0 = top), column `i&1` (0 = left); bit = 1 selects
+  the FG colour, 0 the BG colour** (RGB444 nibbles as in classic C80,
+  high nibble = BG, low = FG).
+- The player renders it by uploading a **procedural font**: glyph for code
+  c has, for mask row r, the byte pair `00->$00, 01->$F0, 10->$0F,
+  11->$FF` (pair = bits 2r and 2r+1), each byte written twice (4 mask rows
+  -> 8 font rows). The classic half-block is mask `$F0`.
+- Effective picture: **160x96 mask samples** with two RGB444 colours per
+  8x8 cell (up from classic C80's 80x48 two-colour-per-cell stacking).
+- **The poster (sectors 1-15) is ALWAYS classic C80** (constant half-block
+  char plane, top/bottom colour semantics) even when bit 2 is set, so
+  poster/thumbnail renderers need no BTC awareness.
+- Compatibility: a version-1 reader that follows the versioning rules
+  ignores bit 2 and plays the file as classic C80 (players that map all
+  256 codes to the half-block glyph show a stable 80x48 approximation;
+  writers SHOULD orient BG/FG per cell to minimise that fallback error).
+  Writers MUST NOT set bit 2 with any profile other than 2, and MUST set
+  header_version to 2 when setting bit 2.
+
+## 6. MVP and sequencing
 
 1. **Freeze this layout** (after review).
 2. `avf_check.py`: add AVF2 acceptance (small, testable, no risk to
@@ -162,7 +199,7 @@ poster render.
    AVFPLAY - confirm the header is genuinely ignored.
 6. Flip `avi2atari` default to AVF2.
 
-## 6. Open questions
+## 7. Open questions
 
 - **Character set for `title`.** ASCII-only is safe everywhere; Polish
   titles lose diacritics. Option: keep ASCII in the fixed fields, allow a

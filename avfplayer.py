@@ -37,7 +37,7 @@ import math
 # inspection works on machines without pygame installed.
 pygame = None
 
-__version__ = "0.5"
+__version__ = "0.6"
 
 import avf_format as avf
 
@@ -88,6 +88,7 @@ class AVFPlayer:
         self.poster = poster
         self.show_poster = show_poster
         self.profile = meta["profile"] if meta else 0
+        self.c80_btc = bool(meta.get("c80_btc")) if meta else False
         if meta:
             print(f"[*] AVF2: '{meta['title']}' by {meta['author'] or '?'} "
                   f"({meta['system']}, {meta['duration_ms']/1000.0:.1f}s, "
@@ -275,19 +276,16 @@ class AVFPlayer:
         
         return video_frames, snd, viz
 
-    def _blit_frame_c80(self, vf):
-        # AVF-C80 M4 profile: 24 cell rows x [chars|R|G|B] planes of 40+40
-        # bytes each; every RGB byte packs BG in the high nibble (top pixel)
-        # and FG in the low nibble (bottom pixel) -> an 80x48 RGB444 image.
-        a = vf.reshape(24, 8, 40)
-        Rb = a[:, 2:4, :].reshape(24, 80).astype(np.int32)
-        Gb = a[:, 4:6, :].reshape(24, 80).astype(np.int32)
-        Bb = a[:, 6:8, :].reshape(24, 80).astype(np.int32)
-        rgb = np.zeros((48, 80, 3), dtype=np.float32)
-        rgb[0::2, :, 0] = (Rb >> 4) * 17;  rgb[1::2, :, 0] = (Rb & 15) * 17
-        rgb[0::2, :, 1] = (Gb >> 4) * 17;  rgb[1::2, :, 1] = (Gb & 15) * 17
-        rgb[0::2, :, 2] = (Bb >> 4) * 17;  rgb[1::2, :, 2] = (Bb & 15) * 17
-        rgb_192 = np.repeat(np.repeat(rgb, 4, axis=0), 2, axis=1)
+    def _blit_frame_c80(self, vf, btc=False):
+        # AVF-C80 M4 profile, via the shared decoders: classic = 80x48
+        # (BG nibble = top pixel, FG = bottom), BTC = 160x96 (char byte =
+        # 2x4 subcell mask). Both end as a 192x160 buffer like APAC.
+        if btc:
+            rgb = avf.decode_c80btc_rgb(vf.tobytes()).astype(np.float32)
+            rgb_192 = np.repeat(rgb, 2, axis=0)              # (96,160)->(192,160)
+        else:
+            rgb = avf.decode_c80_rgb(vf.tobytes()).astype(np.float32)
+            rgb_192 = np.repeat(np.repeat(rgb, 4, axis=0), 2, axis=1)
         if self.show_scanlines:
             rgb_192 = (rgb_192 * self.scanline_mask).astype(np.uint8)
         else:
@@ -295,11 +293,12 @@ class AVFPlayer:
         surf = pygame.surfarray.make_surface(rgb_192.swapaxes(0, 1))
         self.screen.blit(pygame.transform.scale(surf, (self.window_w, self.window_h)), (0, 0))
 
-    def _blit_frame(self, vf):
+    def _blit_frame(self, vf, btc=None):
         # Full render pipeline for one 192x40 frame (video or AVF2 poster):
         # line split, nibble unpack, palette decode, upscale, blend, scanlines.
+        # btc: override the file's BTC flag (posters are always classic).
         if self.profile == 2:
-            return self._blit_frame_c80(vf)
+            return self._blit_frame_c80(vf, self.c80_btc if btc is None else btc)
         chroma_line = (vf[0::2] if self.is_pal else vf[1::2])
         luma_line   = (vf[1::2] if self.is_pal else vf[0::2])
 
@@ -341,7 +340,7 @@ class AVFPlayer:
         # doubles as a colour-tuning screen.
         vf = np.frombuffer(self.poster, dtype=np.uint8).reshape(HEIGHT, 40)
         while True:
-            self._blit_frame(vf)
+            self._blit_frame(vf, btc=False)   # posters are always classic
             lbl = self.font.render(
                 "AVF2 POSTER - any key: play | ESC: quit | S/B/[/] tune", True, (255,255,0))
             self.screen.blit(lbl, (10, 10))

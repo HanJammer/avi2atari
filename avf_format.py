@@ -11,7 +11,7 @@ Layout reference: avi2atari docs/AVF_FORMAT.md and docs/AVF2_HEADER.md.
 import os
 import time
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 # --- geometry ---------------------------------------------------------------
 WIDTH, HEIGHT = 160, 192          # APAC luma grid
@@ -26,6 +26,14 @@ PROFILE_C80M3 = 1                 # reserved, not implemented
 PROFILE_C80M4 = 2
 PROFILE_NAMES = {0: "APAC", 1: "C80M3", 2: "C80M4"}
 C80_HALFBLOCK = 0x01             # C80 cell glyph: rows 0-3 BG, rows 4-7 FG
+
+# --- AVF2 flags (header byte 6) ---------------------------------------------
+FLAG_POSTER = 0x01               # poster present in sectors 1-15
+FLAG_POSTER_PROFILE = 0x02       # poster encoded in the (non-APAC) profile
+FLAG_C80_BTC = 0x04              # C80 char plane = 2x4 subcell masks
+                                 # (header_version >= 2, profile 2 only;
+                                 #  spec/AVF2_HEADER.md section 5)
+C80BTC_HALFBLOCK_MASK = 0xF0     # the classic half-block as a BTC mask
 
 # --- TV systems (AVF2 header byte 5) ----------------------------------------
 SYSTEM_NAMES = {0: "PAL", 1: "NTSC"}
@@ -88,24 +96,30 @@ def _avf2_text(value, length):
 
 
 def build_avf2_header(is_pal, frame_count, poster_data, meta,
-                      profile=PROFILE_APAC):
+                      profile=PROFILE_APAC, c80_btc=False):
     """Build the 8192-byte AVF2 header (sector 0 + 7680-byte poster).
 
     meta: dict with optional title/author/comment. poster_data: 7680 bytes
     or None. profile: PROFILE_* (poster is flagged as profile-encoded when
-    non-APAC).
+    non-APAC). c80_btc: the stream's char plane carries 2x4 subcell masks
+    (spec section 5) - bumps header_version to 2; the POSTER stays classic
+    C80 regardless.
     """
+    if c80_btc and profile != PROFILE_C80M4:
+        raise ValueError("C80_BTC requires profile 2 (C80M4)")
     spf = seconds_per_frame(is_pal)
     duration_ms = int(round(frame_count * spf * 1000.0))
     meta = meta or {}
 
     s0 = bytearray(512)
     s0[0:4] = b"AVF2"
-    s0[4] = 1                                       # header_version
+    s0[4] = 2 if c80_btc else 1                     # header_version
     s0[5] = 0 if is_pal else 1                      # system
-    flags = 1 if poster_data else 0                 # bit0 = poster present
+    flags = FLAG_POSTER if poster_data else 0
     if poster_data and profile != PROFILE_APAC:
-        flags |= 2                                  # bit1 = poster in-profile
+        flags |= FLAG_POSTER_PROFILE
+    if c80_btc:
+        flags |= FLAG_C80_BTC
     s0[6] = flags
     s0[7] = profile                                 # video profile
     s0[8:12] = int(frame_count).to_bytes(4, "little")
@@ -159,18 +173,30 @@ def parse_avf2_header(buf):
     profile = s0[7]
     if profile not in PROFILE_NAMES:
         problems.append(f"AVF2 profile byte is {profile}, expected 0/1/2")
-    if (s0[6] & 2) and profile == PROFILE_APAC:
+    if (s0[6] & FLAG_POSTER_PROFILE) and profile == PROFILE_APAC:
         problems.append("AVF2 flags bit1 (profile-encoded poster) set on "
                         "an APAC file")
+    c80_btc = bool(s0[6] & FLAG_C80_BTC)
+    if c80_btc and profile != PROFILE_C80M4:
+        problems.append("AVF2 flags bit2 (C80_BTC) set but profile is "
+                        f"{profile}, expected 2 (C80M4)")
+    if c80_btc and version < 2:
+        problems.append("AVF2 flags bit2 (C80_BTC) requires "
+                        f"header_version >= 2, got {version}")
 
+    prof_name = PROFILE_NAMES.get(profile, f"?{profile}")
+    if c80_btc:
+        prof_name += "+BTC"
     meta = {
         "version": version,
         "system": SYSTEM_NAMES.get(s0[5], f"?{s0[5]}"),
         "is_pal": s0[5] == 0,
-        "poster": bool(s0[6] & 1),
-        "poster_c80": bool(s0[6] & 2),
+        "flags": s0[6],
+        "poster": bool(s0[6] & FLAG_POSTER),
+        "poster_c80": bool(s0[6] & FLAG_POSTER_PROFILE),
+        "c80_btc": c80_btc,
         "profile": profile,
-        "profile_name": PROFILE_NAMES.get(profile, f"?{profile}"),
+        "profile_name": prof_name,
         "frame_count": int.from_bytes(s0[8:12], "little"),
         "duration_ms": int.from_bytes(s0[12:16], "little"),
         "date": _text(s0, 16, 24),
@@ -186,6 +212,21 @@ def parse_avf2_header(buf):
         if nz:
             problems.append(f"AVF2 poster flag is 0 but poster area has "
                             f"{nz} non-zero bytes")
+    elif c80_btc:
+        # Spec section 5: a C80_BTC file's poster is ALWAYS classic C80 -
+        # its char plane must be the constant half-block glyph, never masks.
+        if not (s0[6] & FLAG_POSTER_PROFILE):
+            problems.append("AVF2 C80_BTC poster must set flags bit1 "
+                            "(profile-encoded poster)")
+        poster = buf[512:HEADER_SIZE]
+        bad = 0
+        for r in range(24):
+            row = poster[r * 320:r * 320 + 80]
+            bad += sum(1 for b in row if b != C80_HALFBLOCK)
+        if bad:
+            problems.append(f"AVF2 C80_BTC poster must be classic C80 "
+                            f"(char plane all $01) but {bad}/1920 char "
+                            f"bytes differ - BTC masks in the poster?")
 
     return meta, problems
 
@@ -377,9 +418,40 @@ def decode_c80_rgb(video_bytes):
     return out
 
 
-def decode_frame_rgb(video_bytes, profile, is_pal):
-    """Dispatch by profile -> (H, W, 3) uint8."""
+def c80_planes(video_bytes):
+    """7680 C80 bytes -> (chars, bg, fg): chars (24,80) uint8 and the two
+    RGB444 colour arrays (24,80,3) int32 (high nibble = BG, low = FG)."""
+    import numpy as np
+    a = np.frombuffer(bytes(video_bytes[:VIDEO_BYTES]), np.uint8).reshape(24, 8, 40)
+    chars = a[:, 0:2, :].reshape(24, 80)
+    ch = np.stack([a[:, 2:4, :].reshape(24, 80),
+                   a[:, 4:6, :].reshape(24, 80),
+                   a[:, 6:8, :].reshape(24, 80)], -1).astype(np.int32)
+    return chars, (ch >> 4) & 0xF, ch & 0xF
+
+
+def decode_c80btc_rgb(video_bytes):
+    """7680 C80+BTC bytes -> (96, 160, 3) uint8.
+
+    Char byte = 2x4 subcell mask: bit i covers mask row i>>1 (0 = top),
+    column i&1 (0 = left); set bit selects FG (low nibble), clear BG
+    (high nibble). Spec: AVF2_HEADER.md section 5."""
+    import numpy as np
+    chars, bg, fg = c80_planes(video_bytes)
+    bits = (chars[:, :, None].astype(np.int32) >> np.arange(8)) & 1  # (24,80,8)
+    # bit index -> (mask row, mask col): (24,80,4,2) then to (24,4,80,2)
+    grid = bits.reshape(24, 80, 4, 2).transpose(0, 2, 1, 3)
+    sel = grid.reshape(96, 160)[:, :, None]                          # 0/1
+    bg_px = np.repeat(np.repeat(bg, 4, 0), 2, 1).reshape(96, 160, 3)
+    fg_px = np.repeat(np.repeat(fg, 4, 0), 2, 1).reshape(96, 160, 3)
+    return (np.where(sel == 1, fg_px, bg_px) * 17).astype(np.uint8)
+
+
+def decode_frame_rgb(video_bytes, profile, is_pal, c80_btc=False):
+    """Dispatch by profile (+ BTC flag) -> (H, W, 3) uint8."""
     if is_c80(profile):
+        if c80_btc:
+            return decode_c80btc_rgb(video_bytes)
         return decode_c80_rgb(video_bytes)
     return decode_apac_rgb(video_bytes, is_pal)
 

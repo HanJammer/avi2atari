@@ -169,8 +169,8 @@ def _resolve_poster(opts, dur):
 def _conv_args(inp, out_base, o, poster):
     argv = [sys.executable, "-u", CONVERTER, inp, "--system", o["system"],
             "--out", out_base, "--aspect", o.get("aspect", "fit")]
-    if o["profile"] == "c80m4":
-        argv += ["--profile", "c80m4"]
+    if o["profile"] in ("c80m4", "c80btc"):
+        argv += ["--profile", o["profile"]]
     elif o.get("avf2", True):
         argv += ["--avf2"]
     for k in ("title", "author", "comment"):
@@ -242,8 +242,8 @@ def _job_convert_urls(job, urls, opts):
                 job.msg = f"[{i+1}/{n}] downloading..."
                 argv = [sys.executable, "-u", CONVERTER, url, "--system",
                         opts["system"], "--out", os.path.join(outdir, f"url{i}")]
-                if opts["profile"] == "c80m4":
-                    argv += ["--profile", "c80m4"]
+                if opts["profile"] in ("c80m4", "c80btc"):
+                    argv += ["--profile", opts["profile"]]
                 elif opts.get("avf2", True):
                     argv += ["--avf2"]
                 for k in ("title", "author", "comment"):
@@ -268,8 +268,8 @@ def _job_testtone(job, opts):
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR, prefix="avfjob_") as d:
             argv = [sys.executable, "-u", CONVERTER, "--test-gen",
                     "--system", opts["system"]]
-            if opts["profile"] == "c80m4":
-                argv += ["--profile", "c80m4"]
+            if opts["profile"] in ("c80m4", "c80btc"):
+                argv += ["--profile", opts["profile"]]
             else:
                 argv += ["--avf2"]
             job.msg = "generating test signal..."
@@ -301,7 +301,9 @@ def encode_image_poster(image_bytes, filename, system, profile):
                         "yuv420p", clip], check=True, timeout=120)
         argv = [sys.executable, CONVERTER, clip, "--system", system,
                 "--out", os.path.join(d, "p"), "--poster", "0"]
-        argv += ["--profile", "c80m4"] if profile == "c80m4" else ["--avf2"]
+        # the poster is ALWAYS classic C80 for C80 files (spec section 5),
+        # so the still is encoded with plain c80m4 even for c80btc streams
+        argv += ["--profile", "c80m4"] if profile in ("c80m4", "c80btc") else ["--avf2"]
         subprocess.run(argv, cwd=d, capture_output=True, text=True,
                        timeout=CONVERT_TIMEOUT)
         avfs = [x for x in os.listdir(d) if x.lower().endswith(".avf")]
@@ -337,25 +339,28 @@ def _spawn(fn, *a):
 # ===========================================================================
 # preview / decode
 # ===========================================================================
-def render_png(video_bytes, profile, is_pal):
+def render_png(video_bytes, profile, is_pal, c80_btc=False):
     from PIL import Image
-    rgb = avf.decode_frame_rgb(video_bytes, profile, is_pal)
+    rgb = avf.decode_frame_rgb(video_bytes, profile, is_pal, c80_btc)
     img = Image.fromarray(rgb, "RGB").resize((640, 384), Image.NEAREST)
     b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
 
 
 def frame_video(data, info, index):
-    if index < 0 and info["meta"] and info["meta"].get("poster"):
+    meta = info["meta"] or {}
+    if index < 0 and meta.get("poster"):
+        # posters are ALWAYS classic-encoded, even in C80_BTC files (spec 5)
         return avf.poster_from_header(data[:avf.HEADER_SIZE], info["meta"]), \
-            info["profile"]
+            info["profile"], False
     fs = info["frame_size"]
     off = info["payload_off"] + max(0, index) * fs
     frame = data[off:off + fs]
     if len(frame) < fs:
         raise HTTPException(400, "frame index out of range")
-    # Both profiles use the APAC container; unwrap the block/pad mux to the
-    # 7680 video bytes (the render dispatches by profile).
-    return avf.demux_apac_video(frame), info["profile"]
+    # All profiles use the APAC container; unwrap the block/pad mux to the
+    # 7680 video bytes (the render dispatches by profile + BTC flag).
+    return avf.demux_apac_video(frame), info["profile"], \
+        bool(meta.get("c80_btc"))
 
 
 # ===========================================================================
@@ -486,9 +491,11 @@ async def api_meta(request: Request, file: UploadFile = File(...)):
         with open(p, "wb") as f:
             f.write(data)
         info = avf.classify(p)
+    m = info["meta"] or {}
     return JSONResponse({
         "kind": info["kind"], "profile": info["profile"],
-        "profile_name": avf.PROFILE_NAMES.get(info["profile"], "?"),
+        "profile_name": m.get("profile_name")
+        or avf.PROFILE_NAMES.get(info["profile"], "?"),
         "n_frames": info["n_frames"], "is_pal": info["is_pal"],
         "meta": info["meta"], "problems": info["problems"]})
 
@@ -554,9 +561,10 @@ async def api_preview(request: Request, file: UploadFile = File(...),
         info = avf.classify(p)
     if info["kind"] == "unknown":
         raise HTTPException(400, "unrecognised AVF file")
-    video, profile = frame_video(data, info, frame)
+    video, profile, c80_btc = frame_video(data, info, frame)
     is_pal = info["is_pal"] if info["is_pal"] is not None else True
-    return Response(render_png(video, profile, is_pal), media_type="image/png")
+    return Response(render_png(video, profile, is_pal, c80_btc),
+                    media_type="image/png")
 
 
 @app.get("/")

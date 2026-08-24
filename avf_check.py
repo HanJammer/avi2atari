@@ -38,7 +38,7 @@ import argparse
 
 import avf_format as avf
 
-__version__ = "0.6"
+__version__ = "0.7"
 
 FRAME_SIZE = avf.FRAME_SIZE_APAC
 HEADER_SIZE = avf.HEADER_SIZE
