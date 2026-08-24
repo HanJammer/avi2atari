@@ -32,6 +32,13 @@ def classic_poster_bytes():
     return p.tobytes()
 
 
+
+def _state():
+    """Fresh temporal-state arrays for encode_c80btc_frame."""
+    return (np.zeros((24, 80), np.uint8),
+            np.zeros((24, 80, 3), np.uint8),
+            np.zeros((24, 80, 3), np.uint8))
+
 # 1. valid header ----------------------------------------------------------
 def test_header_valid():
     h = avf.build_avf2_header(True, 42, classic_poster_bytes(), {"title": "x"},
@@ -101,7 +108,7 @@ def test_roundtrip():
         rgb[0::4, :, k] = A[k]                 # every block's top mask row
     leg_bg = np.zeros((24, 80, 3), np.uint8)
     leg_fg = np.zeros((24, 80, 3), np.uint8)
-    enc = a.encode_c80btc_frame(rgb, leg_bg, leg_fg)
+    enc = a.encode_c80btc_frame(rgb, leg_bg, leg_fg, *_state(), 0, 0.0)
     dec = avf.decode_c80btc_rgb(enc.tobytes()).astype(np.float32)
     assert np.array_equal(dec, rgb), "lossless-representable frame diverged"
     ok("round-trip: exactly-representable 160x96 frame is lossless")
@@ -120,7 +127,7 @@ def test_beats_baseline():
                     ca[:, 6:8, :].reshape(24, 80)], -1)
     leg_bg = ((leg >> 4) & 0xF).astype(np.uint8)
     leg_fg = (leg & 0xF).astype(np.uint8)
-    enc = a.encode_c80btc_frame(rgb, leg_bg, leg_fg)
+    enc = a.encode_c80btc_frame(rgb, leg_bg, leg_fg, *_state(), 0, 0.0)
     btc_rec = avf.decode_c80btc_rgb(enc.tobytes()).astype(np.float64)
     base_rec = np.repeat(np.repeat(
         avf.decode_c80_rgb(classic.tobytes()).astype(np.float64), 2, 0), 2, 1)
@@ -163,7 +170,7 @@ def test_preview_routing():
     import avi2atari as a
     rgb = np.zeros((96, 160, 3), np.float32)
     leg = np.zeros((24, 80, 3), np.uint8)
-    enc = a.encode_c80btc_frame(rgb, leg, leg)
+    enc = a.encode_c80btc_frame(rgb, leg, leg, *_state(), 0, 0.0)
     abuf = np.zeros(320, np.uint8)
     buf = io.BytesIO()
     a.mux_frame(buf, enc, abuf, True)
@@ -190,9 +197,44 @@ def test_preview_routing():
     ok("routing: poster decodes classic 48x80, stream decodes BTC 96x160")
 
 
+# 9. temporal hysteresis: fewer changes, bounded quality cost --------------
+def test_temporal_hysteresis():
+    import avi2atari as a
+    rng = np.random.default_rng(7)
+    base = (rng.random((96, 160, 3)) * 255).astype(np.float32)
+    noise1 = rng.normal(0, 6, base.shape).astype(np.float32)
+    noise2 = rng.normal(0, 6, base.shape).astype(np.float32)
+    f1 = np.clip(base + noise1, 0, 255)
+    f2 = np.clip(base + noise2, 0, 255)
+    leg = np.zeros((24, 80, 3), np.uint8)
+    K = 0.15
+
+    # stateless: two independent frames
+    e1 = a.encode_c80btc_frame(f1, leg, leg, *_state(), 0, 0.0)
+    e2 = a.encode_c80btc_frame(f2, leg, leg, *_state(), 0, 0.0)
+    stateless_changes = int((e1 != e2).sum())
+    stateless_sse = float(((avf.decode_c80btc_rgb(e2.tobytes())
+                            .astype(np.float64) - f2) ** 2).sum())
+
+    # hysteresis: same two frames through carried state
+    pm, pb, pf = _state()
+    h1 = a.encode_c80btc_frame(f1, leg, leg, pm, pb, pf, 0, K)
+    h2 = a.encode_c80btc_frame(f2, leg, leg, pm, pb, pf, 1, K)
+    hyst_changes = int((h1 != h2).sum())
+    hyst_sse = float(((avf.decode_c80btc_rgb(h2.tobytes())
+                       .astype(np.float64) - f2) ** 2).sum())
+
+    assert np.array_equal(h1, e1), "first frame must be stateless-identical"
+    assert hyst_changes < stateless_changes, (hyst_changes, stateless_changes)
+    assert hyst_sse <= stateless_sse * (1.0 + K) + 1e-6, (hyst_sse, stateless_sse)
+    ok(f"temporal: changes {stateless_changes} -> {hyst_changes} "
+       f"(-{100 - 100 * hyst_changes // max(1, stateless_changes)}%), "
+       f"SSE ratio {hyst_sse / stateless_sse:.3f} <= 1+K")
+
 if __name__ == "__main__":
     for t in (test_header_valid, test_illegal_combos, test_mask_geometry,
               test_roundtrip, test_beats_baseline, test_tools_preserve_flag,
-              test_poster_classic_enforced, test_preview_routing):
+              test_poster_classic_enforced, test_preview_routing,
+              test_temporal_hysteresis):
         t()
     print(f"ALL {PASSED} TESTS PASSED")

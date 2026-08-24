@@ -185,7 +185,8 @@ def encode_c80m4_frame(rgb):
 
 # --- C80/BTC VIDEO KERNEL (Numba JIT) ---
 @jit(nopython=True, fastmath=True)
-def encode_c80btc_frame(rgb, leg_bg, leg_fg):
+def encode_c80btc_frame(rgb, leg_bg, leg_fg, prev_mask, prev_bg, prev_fg,
+                        prev_valid, stability):
     # rgb: float32 (96, 160, 3), 0..255 - the 160x96 subpixel source.
     # leg_bg/leg_fg: uint8 (24, 80, 3) RGB444 - the HALFBLOCK BASELINE for
     # the same 160x96 target (the classic encoder run on a box-2x2 downscale
@@ -203,6 +204,18 @@ def encode_c80btc_frame(rgb, leg_bg, leg_fg):
     # picks the BG/FG orientation that the legacy half-block fallback
     # (old players: BG top / FG bottom) renders best.
     # Stateless by design (Codex review: temporal damping is phase 2).
+    #
+    # PHASE 2 - temporal hysteresis (encoder-only; the format, decoders and
+    # the Atari player are untouched): prev_mask (24,80) u8 + prev_bg/fg
+    # (24,80,3) u8 carry the previous frame's chosen cells. When
+    # prev_valid == 1 and the previous cell's error on the CURRENT block is
+    # <= best_err * (1 + stability), the previous cell is kept verbatim -
+    # static areas stop flickering, and the spatial regression is bounded
+    # by the stability factor per cell. prev_valid == 0 (or stability <= 0
+    # at the call site) disables the path entirely = the stateless v1.
+    # A scene cut self-heals: the old cell's error explodes past the bound
+    # and the stateless winner replaces it. The arrays are updated in
+    # place with each cell's final choice.
     #
     # Working state lives in small typed arrays (best/cand), not scalar
     # locals: numba 0.60's scalar SSA unification mistyped the scalar
@@ -290,6 +303,31 @@ def encode_c80btc_frame(rgb, leg_bg, leg_fg):
                     t = best[k]
                     best[k] = best[3 + k]
                     best[3 + k] = t
+
+            # temporal hysteresis: keep the previous frame's cell when it
+            # still explains the current block within the stability bound
+            if prev_valid == 1:
+                pm = prev_mask[cy, cx]
+                perr = 0.0
+                for i in range(8):
+                    if (pm >> i) & 1:
+                        for k in range(3):
+                            d = px[i, k] - prev_fg[cy, cx, k] * 17.0
+                            perr += d * d
+                    else:
+                        for k in range(3):
+                            d = px[i, k] - prev_bg[cy, cx, k] * 17.0
+                            perr += d * d
+                if perr <= best_err * (1.0 + stability):
+                    best_mask = pm
+                    for k in range(3):
+                        best[k] = prev_bg[cy, cx, k]
+                        best[3 + k] = prev_fg[cy, cx, k]
+
+            prev_mask[cy, cx] = best_mask
+            for k in range(3):
+                prev_bg[cy, cx, k] = best[k]
+                prev_fg[cy, cx, k] = best[3 + k]
 
             out[base + cx] = best_mask
             out[base + 80 + cx] = (best[0] << 4) | best[3]
@@ -723,6 +761,15 @@ def process_single_file(input_file, system, output_file, config):
     errfq = np.zeros((HEIGHT, 80), dtype=np.float32)
     errfy = np.zeros((HEIGHT, 80), dtype=np.float32)
 
+    # C80/BTC temporal-hysteresis state (per file; see encode_c80btc_frame)
+    btc_stability = float(config.get('btc_stability', 0.0) or 0.0)
+    btc_prev_mask = np.zeros((24, 80), dtype=np.uint8)
+    btc_prev_bg = np.zeros((24, 80, 3), dtype=np.uint8)
+    btc_prev_fg = np.zeros((24, 80, 3), dtype=np.uint8)
+    btc_prev_valid = 0
+    if c80_btc and btc_stability > 0.0:
+        print(f"    BTC temporal stability: {btc_stability:.2f}")
+
     f_vid = open(temp_vid, "rb")
 
     # Open audio file only if it exists, otherwise we'll generate silence in loop
@@ -798,7 +845,12 @@ def process_single_file(input_file, system, output_file, config):
                                 ca[:, 6:8, :].reshape(24, 80)], -1)
                 leg_bg = ((leg >> 4) & 0xF).astype(np.uint8)
                 leg_fg = (leg & 0xF).astype(np.uint8)
-                encoded_vid = encode_c80btc_frame(rgb96, leg_bg, leg_fg)
+                encoded_vid = encode_c80btc_frame(
+                    rgb96, leg_bg, leg_fg,
+                    btc_prev_mask, btc_prev_bg, btc_prev_fg,
+                    btc_prev_valid if btc_stability > 0.0 else 0,
+                    btc_stability)
+                btc_prev_valid = 1
             elif c80:
                 rgb = np.frombuffer(rgb_data, dtype=np.uint8).reshape((48, 80, 3)).astype(np.float32)
                 encoded_vid = encode_c80m4_frame(rgb)
@@ -931,6 +983,13 @@ def main():
     parser.add_argument("--allow-slow", action="store_true",
                         help="Allow --profile c80btc without numba (the pure-Python "
                              "exhaustive search takes HOURS per minute of video)")
+    parser.add_argument("--btc-stability", type=float, default=0.10, metavar="K",
+                        help="c80btc temporal hysteresis: keep a cell's previous "
+                             "mask+colours while their error stays within "
+                             "(1+K) of the per-frame optimum. Kills mask "
+                             "flicker in static areas at a bounded cost; "
+                             "0 = off (stateless). Default: 0.10. "
+                             "Encoder-side only - files stay fully compatible.")
     parser.add_argument("--aspect", choices=['stretch', 'fit'], default='stretch',
                         help="How to fit source into 160x192: 'stretch' (legacy default, "
                              "fills the frame) or 'fit' (preserves source aspect ratio with "
@@ -987,6 +1046,7 @@ def main():
         'avf2': args.avf2,
         'profile': PROFILE_C80M4 if args.profile in ('c80m4', 'c80btc') else PROFILE_APAC,
         'c80_btc': args.profile == 'c80btc',
+        'btc_stability': max(0.0, args.btc_stability),
         'title': args.title,
         'author': args.author,
         'comment': args.comment,
