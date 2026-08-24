@@ -655,11 +655,13 @@ def process_single_file(input_file, system, output_file, config):
     # do the matrix conversion during the scale stage costs nothing extra.
     c80 = config['profile'] == PROFILE_C80M4
     c80_btc = c80 and config.get('c80_btc', False)
-    # --denoise: temporal-only hqdn3d at SOURCE resolution, ahead of the
-    # scaler. Spatial strengths are 0 (no blur); the temporal pass averages
-    # what does not move, killing the source noise that drives per-frame
-    # cell re-decisions (glyph shimmer) in the C80/BTC encoder - and it
-    # helps APAC dither stability just the same.
+    # --denoise: temporal-only hqdn3d AFTER the scaler (at 160x96-class
+    # resolution the temporal pass costs next to nothing; running it at
+    # source resolution made "Extracting Video" crawl on HD material).
+    # Spatial strengths are 0 (no blur) - static detail stays sharp; the
+    # temporal pass averages what does not move, killing the noise that
+    # drives per-frame cell re-decisions (glyph shimmer) in C80/BTC and
+    # APAC dither crawl alike.
     denoise_filter = "hqdn3d=0:0:6:6," if config.get('denoise') else ""
     if c80:
         # C80M4: true-colour cells; the FPGA renders RGB directly, so no
@@ -671,7 +673,8 @@ def process_single_file(input_file, system, output_file, config):
                             f"pad={c80_w}:{c80_h}:(ow-iw)/2:(oh-ih)/2:black")
         else:
             scale_filter = f"scale={c80_w}:{c80_h}:flags=lanczos"
-        vf_chain = (f"{denoise_filter}{scale_filter},"
+        vf_chain = (f"{scale_filter},"
+                    f"{denoise_filter}"
                     f"eq=contrast={config['contrast']},"
                     f"hue=s={config['saturation']},"
                     f"fps={fps},format=rgb24")
@@ -700,7 +703,8 @@ def process_single_file(input_file, system, output_file, config):
     # Both filters are no-ops at 1.0, so default behaviour is preserved.
     if not c80:
         vf_chain = (
-            f"{denoise_filter}{scale_filter},"
+            f"{scale_filter},"
+            f"{denoise_filter}"
             f"eq=contrast={config['contrast']},"
             f"hue=s={config['saturation']},"
             f"fps={fps},format=yuv420p"
