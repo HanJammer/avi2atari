@@ -118,6 +118,8 @@ losslessly (only the header changes - the video is never re-encoded).
 | **AVF-C80 M4** | `c80m4` | 80x48 | direct RGB444 per pixel (4096 colours) | GTIA2RGB + [AV2PLAY](https://github.com/HanJammer/av2play) |
 | **AVF-C80 M4 BTC** | `c80btc` | 160x96 subpixel masks | 2x RGB444 per 8x8 cell (4096 colours) | GTIA2RGB + [AV2PLAY](https://github.com/HanJammer/av2play) |
 
+[![Profile comparison](https://img.youtube.com/vi/EtXzzEC1_38/0.jpg)](https://www.youtube.com/watch?v=EtXzzEC1_38)
+
 **APAC and the GTIA limits.** The stock Atari has no framebuffer colour
 mode anywhere near video-friendly, so APAC (Any Point, Any Color) plays
 GTIA against itself: it alternates the two GTIA modes every scan line -
