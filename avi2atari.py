@@ -43,7 +43,7 @@ import shutil
 import numpy as np
 import math
 try:
-    from numba import jit
+    from numba import jit, prange
     NUMBA_OK = True
 except ImportError:
     # Numba is an accelerator, not a requirement: fall back to plain Python
@@ -56,6 +56,7 @@ except ImportError:
         def _deco(fn):
             return fn
         return _deco
+    prange = range
     print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
 __version__ = "0.8"
@@ -183,8 +184,8 @@ def encode_c80m4_frame(rgb):
             out[base + 240 + x] = (q[top, x, 2] << 4) | q[bot, x, 2]
     return out.reshape((192, 40))
 
-# --- C80/BTC VIDEO KERNEL (Numba JIT) ---
-@jit(nopython=True, fastmath=True)
+# --- C80/BTC VIDEO KERNEL (Numba JIT, parallel over cell rows) ---
+@jit(nopython=True, fastmath=True, parallel=True)
 def encode_c80btc_frame(rgb, leg_bg, leg_fg, prev_mask, prev_bg, prev_fg,
                         prev_valid, stability):
     # rgb: float32 (96, 160, 3), 0..255 - the 160x96 subpixel source.
@@ -221,10 +222,13 @@ def encode_c80btc_frame(rgb, leg_bg, leg_fg, prev_mask, prev_bg, prev_fg,
     # locals: numba 0.60's scalar SSA unification mistyped the scalar
     # version (or_(float64, int64) at the nibble pack).
     out = np.zeros(7680, dtype=np.uint8)
-    px = np.zeros((8, 3), dtype=np.float32)
-    best = np.zeros(6, dtype=np.int32)    # bg r,g,b | fg r,g,b
-    cand = np.zeros(6, dtype=np.int32)
-    for cy in range(24):
+    for cy in prange(24):
+        # per-iteration (= per-thread) work buffers: cells are fully
+        # independent, so rows parallelise cleanly - each cell only reads
+        # and writes its own prev_* slot
+        px = np.zeros((8, 3), dtype=np.float32)
+        best = np.zeros(6, dtype=np.int32)    # bg r,g,b | fg r,g,b
+        cand = np.zeros(6, dtype=np.int32)
         base = cy * 320
         for cx in range(80):
             for r in range(4):
@@ -757,7 +761,8 @@ def process_single_file(input_file, system, output_file, config):
         return
 
     # --- 3. ENCODING & MUXING ---
-    print(f"    [3/3] Encoding & Muxing...")
+    print(f"    [3/3] Encoding & Muxing... "
+          f"(numba: {'ON' if NUMBA_OK else 'OFF - SLOW, pure Python'})")
 
     fout = open(output_file, "wb")
 
@@ -977,9 +982,13 @@ def main():
 
     # AVF2 metadata header (see docs/AVF2_HEADER.md). Fully backward
     # compatible: existing players skip the header region unconditionally.
+    parser.add_argument("--avf", type=int, choices=[1, 2], default=None,
+                        metavar="N",
+                        help="Container version: 2 = AVF2 metadata header "
+                             "(the default), 1 = plain legacy AVF v1 (zeroed "
+                             "header, no metadata). --no-header implies 1.")
     parser.add_argument("--avf2", action="store_true",
-                        help="Write an AVF2 metadata header (title/author/poster) into the "
-                             "8KB header region. Backward compatible with all players.")
+                        help=argparse.SUPPRESS)  # deprecated alias for --avf 2
     parser.add_argument("--title", default=None, help="AVF2: video title (ASCII, max 64 chars)")
     parser.add_argument("--author", default=None, help="AVF2: author of the conversion (ASCII, max 64 chars)")
     parser.add_argument("--comment", default=None, help="AVF2: free-text comment (ASCII, max 128 chars)")
@@ -1029,8 +1038,17 @@ def main():
         print("       Install it and make sure the 'bin' folder is on PATH - see the README.")
         sys.exit(1)
 
-    if args.avf2 and args.no_header:
-        print("ERROR: --avf2 requires the 8KB header; it cannot be combined with --no-header.")
+    # Container version: AVF2 is the suite default. --avf2 is a deprecated
+    # alias for --avf 2; --no-header implies plain v1 unless --avf 2 was
+    # asked for explicitly (that combination is an error).
+    avf_ver = args.avf
+    if args.avf2 and avf_ver is None:
+        avf_ver = 2
+    if avf_ver is None:
+        avf_ver = 1 if args.no_header else 2
+    if avf_ver == 2 and args.no_header:
+        print("ERROR: AVF2 requires the 8KB header; --avf 2 cannot be combined "
+              "with --no-header.")
         sys.exit(1)
 
     if args.profile in ('c80m4', 'c80btc'):
@@ -1038,9 +1056,14 @@ def main():
             print(f"ERROR: --profile {args.profile} requires the AVF2 header (players must "
                   "be able to identify the profile); it cannot be combined with --no-header.")
             sys.exit(1)
-        if not args.avf2:
-            print(f"NOTE: --profile {args.profile} implies --avf2 (the profile id lives in the header).")
-            args.avf2 = True
+        if avf_ver != 2:
+            print(f"NOTE: --profile {args.profile} implies AVF2 (the profile id lives in the header).")
+            avf_ver = 2
+
+    if avf_ver == 1 and (args.title or args.author or args.comment
+                         or args.poster is not None):
+        print("NOTE: --title/--author/--comment/--poster need AVF2 and are "
+              "IGNORED with --avf 1 (legacy files carry no metadata).")
 
     if args.profile == 'c80btc' and not NUMBA_OK and not args.allow_slow:
         print("ERROR: --profile c80btc needs numba - the un-jitted exhaustive "
@@ -1058,7 +1081,7 @@ def main():
         'aspect': args.aspect,
         'volume': args.volume,
         'loudnorm': args.loudnorm,
-        'avf2': args.avf2,
+        'avf2': avf_ver == 2,
         'profile': PROFILE_C80M4 if args.profile in ('c80m4', 'c80btc') else PROFILE_APAC,
         'c80_btc': args.profile == 'c80btc',
         'btc_stability': max(0.0, args.btc_stability),

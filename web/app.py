@@ -185,8 +185,8 @@ def _conv_args(inp, out_base, o, poster):
         argv += ["--profile", o["profile"]]
         if o["profile"] == "c80btc" and o.get("btc_stability") is not None:
             argv += ["--btc-stability", str(o["btc_stability"])]
-    elif o.get("avf2", True):
-        argv += ["--avf2"]
+    else:
+        argv += ["--avf", "2" if o.get("avf2", True) else "1"]
     for k in ("title", "author", "comment"):
         if o.get(k):
             argv += [f"--{k}", o[k]]
@@ -261,8 +261,8 @@ def _job_convert_urls(job, urls, opts):
                     if opts["profile"] == "c80btc" \
                             and opts.get("btc_stability") is not None:
                         argv += ["--btc-stability", str(opts["btc_stability"])]
-                elif opts.get("avf2", True):
-                    argv += ["--avf2"]
+                else:
+                    argv += ["--avf", "2" if opts.get("avf2", True) else "1"]
                 for k in ("title", "author", "comment"):
                     if opts.get(k):
                         argv += [f"--{k}", opts[k]]
@@ -288,7 +288,7 @@ def _job_testtone(job, opts):
             if opts["profile"] in ("c80m4", "c80btc"):
                 argv += ["--profile", opts["profile"]]
             else:
-                argv += ["--avf2"]
+                argv += ["--avf", "2"]
             job.msg = "generating test signal..."
             rc = _run_converter(argv, d, job, 0.0, 1.0, 500)
             if rc != 0:
