@@ -64,9 +64,9 @@ Tools in this repo:
 `avf.py` is an umbrella CLI over the four; each still runs standalone
 (`python avi2atari.py ...`, `python avf_check.py ...`,
 `python avfplayer.py ...`). The **AVF2** metadata format is the
-recommended default; a plain headerless AVF v1 stream is referred to as
-**Legacy**. Both APAC and the true-colour **AVF-C80** (GTIA2RGB COL80
-Mode 4) profiles are understood across the whole suite.
+**default**; a plain AVF v1 stream is referred to as **Legacy**
+(`--avf 1`). All three video profiles - APAC, AVF-C80 M4 and
+AVF-C80 M4 BTC - are understood across the whole suite.
 
 ### Inspecting and editing metadata
 
@@ -99,16 +99,52 @@ even whether it is PAL or NTSC. Full spec: [spec/AVF_FORMAT.md](spec/AVF_FORMAT.
 **AVF2 - the upgrade.** AVF2 fills the 8 KB region that every player
 already skips with a proper metadata header: magic + checksum, TV
 system, frame count and duration, title / author / converter / date /
-comment, a **poster frame**, and a **video-profile byte** (APAC or the
-true-colour AVF-C80). It is **100% backward compatible** - every
+comment, a **poster frame**, and a **video-profile byte** (APAC or
+AVF-C80, incl. the BTC flag). It is **100% backward compatible** - every
 existing player skips those 16 sectors unchanged, so an AVF2 file still
 plays everywhere, while new tools can show a title, a thumbnail and a
 poster, and pick the right decoder automatically. Full spec:
 [spec/AVF2_HEADER.md](spec/AVF2_HEADER.md).
 
-AVF2 is the recommended default; a plain v1 stream is called **Legacy**
-throughout the suite, and any Legacy file upgrades to AVF2 losslessly
-(only the header changes - the video is never re-encoded).
+AVF2 is the default; a plain v1 stream is called **Legacy** throughout
+the suite (`--avf 1` produces one), and any Legacy file upgrades to AVF2
+losslessly (only the header changes - the video is never re-encoded).
+
+## Video profiles
+
+| Profile | `--profile` | Resolution | Colour | Plays on |
+|---------|-------------|-----------|--------|----------|
+| **APAC** (classic) | `apac` (default) | 80x96 | 256 (16 hues x 16 lumas, line-blended) | every Atari 8-bit |
+| **AVF-C80 M4** | `c80m4` | 80x48 | direct RGB444 per pixel (4096 colours) | GTIA2RGB + [AV2PLAY](https://github.com/HanJammer/av2play) |
+| **AVF-C80 M4 BTC** | `c80btc` | 160x96 subpixel masks | 2x RGB444 per 8x8 cell (4096 colours) | GTIA2RGB + [AV2PLAY](https://github.com/HanJammer/av2play) |
+
+**APAC and the GTIA limits.** The stock Atari has no framebuffer colour
+mode anywhere near video-friendly, so APAC (Any Point, Any Color) plays
+GTIA against itself: it alternates the two GTIA modes every scan line -
+Graphics 11 (16 hues at a fixed luminance) on one line, Graphics 9 (16
+luminances of one hue) on the next - and lets the display blend each
+chroma+luma pair into one of 256 apparent colours. The price is exactly
+the GTIA's shape: wide 80-column pixels, vertical resolution halved by
+the line pairing, colour that only exists *as a blend* (it needs CRT
+line-blending, or the BLENDING option on a GTIA2RGB), and hue/luma that
+cannot change independently within a pair. The converter dithers hard to
+hide all this, but reds and fine colour detail degrade first - those are
+GTIA limits, not encoder bugs.
+
+**AVF-C80 M4** sidesteps the GTIA palette entirely: with a
+[GTIA2RGB](https://lotharek.pl/productdetail.php?id=435) FPGA the picture
+is built from 80x24 character cells whose colours are *direct 12-bit
+RGB* (4096 colours, Amiga-class) - every pixel carries its own colour,
+no palette, no attribute coupling, no blending required.
+
+**AVF-C80 M4 BTC** is M4 with the wasted per-cell character byte turned
+into a **2x4 subpixel mask** (Block-Truncation-style coding): 160x96
+mask detail with two RGB444 colours per cell, at the **same bitrate and
+container** as every other profile. The encoder searches all 128 mask
+partitions per cell, guarantees the result never scores worse than the
+plain half-block cell, and applies temporal hysteresis
+(`--btc-stability`) so static areas do not shimmer. BTC files degrade
+gracefully: an older C80 player simply shows them as 80x48 M4.
 
 ## Web GUI (self-host)
 
@@ -151,7 +187,7 @@ from one `requirements.txt` (ffmpeg is a separate system dependency).
 
 Open the Command Prompt, then:
 
-    winget install Python.Python.3.10
+    winget install Python.Python.3.11
     winget install ffmpeg
     winget install Git.Git
     git clone https://github.com/HanJammer/avi2atari.git
@@ -169,7 +205,7 @@ Open the Command Prompt, then:
 
 Install prerequisities:
 
-**Python 3.8+** (Python 3.10 recommended)
+**Python 3.11+**
 
 **FFmpeg**: You must have FFmpeg installed and added to your system's PATH.
  - _Windows:_ Download from [ffmpeg.org](https://ffmpeg.org/) (official site) or [gyan.dev](https://www.gyan.dev/ffmpeg/builds/#release-builds) (prebuilt binaries with codecs included), extract, and add the `bin` folder to your System Environment Variables (PATH).
@@ -253,6 +289,18 @@ Use loudness normalization and slightly boost saturation for better visuals on C
 python avi2atari.py matrix.mp4 --system PAL --loudnorm --saturation 1.3
 ```
 
+### AVF-C80 BTC (GTIA2RGB)
+
+The highest-detail profile - see [Video profiles](#video-profiles):
+
+```
+python avi2atari.py matrix.mp4 --system PAL --loudnorm --profile c80btc --title "The Matrix (1999)"
+```
+
+`--btc-stability K` tunes the temporal hysteresis (default 0.10, 0 =
+off); `--denoise` adds a temporal-only source denoise that further calms
+glyph shimmer on grainy material.
+
 ### Generate Test Signal
 
 Create a synthesized test file (SMPTE bars + 440Hz tone) to verify your hardware/cabling:
@@ -261,21 +309,23 @@ Create a synthesized test file (SMPTE bars + 440Hz tone) to verify your hardware
 python avi2atari.py --test-gen --system PAL
 ```
 
-### AVF2 metadata header
+### AVF2 metadata header (the default)
 
-`--avf2` writes an ID3-like metadata block (title, author, converter, date,
-duration and a full-resolution poster frame) into the 8KB header region that
-every existing player skips unconditionally - so AVF2 files remain **100%
-playable** by movplay/AVFPLAY and all other AVF v1 consumers:
+AVF2 - an ID3-like metadata block (title, author, converter, date,
+duration and a full-resolution poster frame) written into the 8KB header
+region that every existing player skips unconditionally - is the
+**default output**. AVF2 files remain **100% playable** by
+movplay/AVFPLAY and all other AVF v1 consumers:
 
 ```
-python avi2atari.py matrix.mp4 --system PAL --loudnorm --avf2 --title "The Matrix (1999)" --author "HanJammer"
+python avi2atari.py matrix.mp4 --system PAL --loudnorm --title "The Matrix (1999)" --author "HanJammer"
 ```
 
-The poster frame is taken at 10% of the source duration by default; use
-`--poster SECONDS` to pick a different moment. Without `--title` the source
-filename is used. `avf_check.py` validates and prints the metadata;
-[avfplayer](https://github.com/HanJammer/avfplayer) can display it
+Pass `--avf 1` for a plain Legacy v1 stream (no metadata; the header is
+zeroed). The poster frame is taken at 10% of the source duration by
+default; use `--poster SECONDS` to pick a different moment. Without
+`--title` the source filename is used. `avf_check.py` validates and
+prints the metadata; the bundled `avfplayer.py` can display it
 (`--info`, `--poster`).
 
 ### Validate a finished AVF file
@@ -315,7 +365,7 @@ affects the audio tail-padding pattern, so pass the correct one for NTSC files.
 ## Parameters
 
 ```
-usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--saturation SATURATION] [--contrast CONTRAST] [--aspect {stretch,fit}] [--volume VOLUME | --loudnorm] [input]
+usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--profile {apac,c80m4,c80btc}] [--avf N] [--title TITLE] [--author AUTHOR] [--comment COMMENT] [--poster SECONDS] [--saturation SATURATION] [--contrast CONTRAST] [--aspect {stretch,fit}] [--allow-slow] [--denoise] [--btc-stability K] [--volume VOLUME | --loudnorm] [input]
 ```
 
 | **Parameter**  | **Description**                                                                                                                                                                                       |
@@ -329,7 +379,10 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--saturation` | Color saturation. `1.0` is original. Values above `1.0` boost color (e.g. `1.5` is a visible boost, good for washed-out sources on a CRT); `0.0` gives monochrome video.                                |
 | `--contrast`   | Contrast adjustment. `1.0` is default.                                                                                                                                                                |
 | `--aspect`     | How to fit the source into 160x192: `stretch` (default, fills the frame - legacy behaviour) or `fit` (preserves the source aspect ratio and adds black bars). Use `fit` for 16:9 content to avoid squashing. |
-| `--avf2`       | Write the AVF2 metadata header (backward compatible - see above).                                                                                                                                      |
+| `--profile`    | Video profile: `apac` (default), `c80m4` or `c80btc` - see [Video profiles](#video-profiles). The C80 profiles imply AVF2. |
+| `--avf`        | Container version: `2` = AVF2 metadata header (**default**), `1` = plain Legacy v1 (zeroed header, no metadata). `--no-header` implies `1`. |
+| `--btc-stability` | `c80btc` temporal hysteresis (default `0.10`, `0` = off): cells keep their previous mask/colours while the error stays within `(1+K)` of the per-frame optimum - kills static-area shimmer. |
+| `--denoise`    | Temporal-only denoise of the source (no spatial blur) before encoding - calms glyph shimmer / dither crawl on grainy material, for every profile. |
 | `--title`      | AVF2: video title (ASCII, max 64 chars). Default: source filename.                                                                                                                                     |
 | `--author`     | AVF2: author of the conversion (ASCII, max 64 chars).                                                                                                                                                  |
 | `--comment`    | AVF2: free-text comment (ASCII, max 128 chars).                                                                                                                                                        |
@@ -337,27 +390,10 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
 
-### Parameter Comparison
-
-**Saturation vs Contrast matrix**
-
-![Saturation vs Contrast matrix](images/contrast-vs-saturation_1.png)
-
 ### Output examples
 
-**"DAUBLG Makes it Right!"** ([source video](https://www.youtube.com/watch?v=Pq7VeyPghbY)).
-
-Download AVF: [PAL](https://drive.google.com/file/d/1xqwC5dUnTEuFpL4qeniVdj2TtK0Gm0vs/view?usp=sharing) [NTSC](https://drive.google.com/file/d/1UhUVOQMtQdMp4kDoz1Lhlnayg7lL8b0n/view?usp=sharing)
-
-| **Sample 1**                                  | **Sample 2**                                  |
-| ----------------------------------------------| --------------------------------------------- |
-| ![DAUBLG Example 1](images/daublg-avf1_1.png) | ![DAUBLG Example 2](images/daublg-avf2_1.png) |
-
-**Topo & Roby "Under the Ice" (Live)** ([source video](https://www.youtube.com/watch?v=iR7pwtqyZio)).
-
-| **Sample 1**                                          | **Sample 2**                                          |
-| ------------------------------------------------------| ----------------------------------------------------- |
-| ![Topo & Roby Example 1](images/topo-roby-avf1_1.png) | ![Topo & Roby Example 2](images/topo-roby-avf2_1.png) |
+See the profile-comparison reel (APAC vs C80 M4 vs C80 BTC):
+*(link coming soon)*
 
 ---
 
@@ -385,7 +421,7 @@ frame before playback; `--scale N` sets the window scale (3 default,
 
 ## Limitations & Hardware Notes
 
-I tested the output files extensively on my Atari 130XE with SUB Cart (yet to be tested on my 800XL).
+Output files are tested extensively on real hardware: Atari 130XE and 800XL (PAL) with SUB Cart, the C80 profiles on the 800XL with a GTIA2RGB.
 
 1. **Storage Speed:** Playing AVF video requires a data transfer rate of approx. **8.7 KB/frame** (over 430 KB/s). This requires fast storage solutions like **SUB Cart** (tested), **AVG Cart** (not tested but should work just like SUB Cart), **SIDE2/3** (needs testing - SIDE2/SIDE3 do not play AVF "natively". You need an AVF player that supports SIDE access and the correct filesystem setup). Standard floppy emulators (SIO2SD) are too slow. If playback glitches: try a freshly formatted FAT16 card and copy AVF files first to keep them contiguous (fragmentation breaks streaming).
     
@@ -393,7 +429,7 @@ I tested the output files extensively on my Atari 130XE with SUB Cart (yet to be
     
 3. **Audio Quality:** The audio is essentially 4-bit software PCM played through the POKEY chip. A high-pitched carrier whine (~15kHz) is normal and part of the technology, not a bug.
     
-4. **Color Palette:** The Atari GTIA chip has a limited palette. The converter uses dithering to simulate more colors, but some degradation (especially in reds) is expected compared to the source material.
+4. **Color Palette (APAC):** the GTIA constraints described in [Video profiles](#video-profiles) apply to the APAC profile - dithering hides most of it, but some degradation (especially in reds) is expected. The AVF-C80 profiles bypass the GTIA palette entirely (direct RGB444 via GTIA2RGB), so their limit is the 4096-colour depth and, for BTC, two colours per 8x8 cell.
 
 ---
 
