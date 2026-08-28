@@ -277,11 +277,36 @@ def test_dithered_target_beats_baseline():
     ok(f"dither quality scope: BTC SSE {btc_sse:.3e} <= dithered-target "
        f"baseline {base_sse:.3e}")
 
+# 12. variance gate: full dither on flat cells, none on detailed cells ----
+def test_dither_variance_gate():
+    import avi2atari as a
+    # gentle gradient: every cell is flat -> gate must be a no-op
+    grad = np.tile(np.linspace(40, 200, 160, dtype=np.float32)[None, :, None],
+                   (96, 1, 3))
+    ug = a.apply_btc_ordered_dither(grad, "bayer", 0, 1.0, gate=False)
+    gg = a.apply_btc_ordered_dither(grad, "bayer", 0, 1.0, gate=True)
+    assert np.array_equal(ug, gg), "gate changed flat-gradient cells"
+    assert not np.array_equal(ug, grad), "dither did nothing on the gradient"
+    # per-subpixel checkerboard: every cell is high-detail -> no dither
+    chk = np.zeros((96, 160, 3), np.float32)
+    chk[::2, ::2] = 255.0
+    chk[1::2, 1::2] = 255.0
+    gc = a.apply_btc_ordered_dither(chk, "bayer", 0, 1.0, gate=True)
+    assert np.array_equal(gc, chk), "gate failed to protect detailed cells"
+    # mixed: left half flat, right half busy
+    mix = chk.copy()
+    mix[:, :80] = 128.0
+    gm = a.apply_btc_ordered_dither(mix, "bayer", 0, 1.0, gate=True)
+    assert not np.array_equal(gm[:, :80], mix[:, :80]), "flat half not dithered"
+    assert np.array_equal(gm[:, 80:], mix[:, 80:]), "busy half not protected"
+    ok("variance gate: flat cells dithered, detailed cells untouched")
+
 if __name__ == "__main__":
     for t in (test_header_valid, test_illegal_combos, test_mask_geometry,
               test_roundtrip, test_beats_baseline, test_tools_preserve_flag,
               test_poster_classic_enforced, test_preview_routing,
               test_temporal_hysteresis, test_ordered_dither_geometry,
-              test_dithered_target_beats_baseline):
+              test_dithered_target_beats_baseline,
+              test_dither_variance_gate):
         t()
     print(f"ALL {PASSED} TESTS PASSED")

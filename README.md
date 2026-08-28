@@ -160,6 +160,9 @@ Hardware verdict (800XL + GTIA2RGB): `bayer-t` at strength `0.5`
 looked best - smoother gradients without the static pixel grid -
 at the cost of a subtle, deliberate shimmer; masks alone still
 carry the most detail, so `none` remains the default.
+`--btc-dither-gate` targets exactly that trade: it fades the pattern
+out of high-detail cells (per-cell variance ramp), so the dither only
+works where banding lives.
 
 ## Web GUI (self-host)
 
@@ -416,6 +419,7 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--btc-stability` | `c80btc` temporal hysteresis (`0` = off): cells keep their previous mask/colours while the error stays within `(1+K)` of the per-frame optimum. Default `0.10`, except `bayer-t` defaults to `0`; an explicit value is still allowed. |
 | `--btc-dither` | `c80btc` ordered dither: `none` (default), static screen-anchored `bayer` 8x8, or `bayer-t` shifted one subpixel right per frame. Encoder-side only; the AVF format and player are unchanged. |
 | `--btc-dither-strength` | Bayer strength from `0` to `1`. `1.0` spans one RGB444 step peak-to-peak (about +/-8.37); `0.5` keeps more mask detail. Default `0.5` (hardware-tested sweet spot). |
+| `--btc-dither-gate` | Attenuate the Bayer pattern in cells that already carry real detail (per-cell variance gate): gradients get smoothed, detailed cells keep their masks crisp. Off by default. |
 | `--denoise`    | Temporal-only denoise of the source (no spatial blur) before encoding - calms glyph shimmer / dither crawl on grainy material, for every profile. |
 | `--title`      | AVF2: video title (ASCII, max 64 chars). Default: source filename.                                                                                                                                     |
 | `--author`     | AVF2: author of the conversion (ASCII, max 64 chars).                                                                                                                                                  |

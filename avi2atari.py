@@ -103,7 +103,18 @@ BTC_BAYER8 = np.array([
 BTC_BAYER8_CENTERED = (BTC_BAYER8 + 0.5) / 64.0 - 0.5
 
 
-def apply_btc_ordered_dither(rgb, mode="none", frame_index=0, strength=1.0):
+# Variance gate ramp: cells whose internal detail (mean per-channel std over
+# the 8 subpixels) is below GATE_LO get the full dither (they are flat -
+# gradients, sky - where banding lives); above GATE_HI they get none (the
+# masks are busy encoding REAL detail there and dither grain would only
+# compete with it); in between the amplitude ramps down linearly, so there
+# is no visible seam between gated and ungated cells.
+BTC_GATE_LO = 8.5               # half a quant step of internal variation
+BTC_GATE_HI = 34.0              # two quant steps -> clearly detailed
+
+
+def apply_btc_ordered_dither(rgb, mode="none", frame_index=0, strength=1.0,
+                             gate=False):
     """Return the C80/BTC target with an absolute-coordinate Bayer offset.
 
     ``strength=1`` spans one RGB444 quantisation step peak-to-peak: the
@@ -111,6 +122,11 @@ def apply_btc_ordered_dither(rgb, mode="none", frame_index=0, strength=1.0):
     SAME scalar offset is added to R/G/B, avoiding independent-channel chroma
     speckle.  Static ``bayer`` is screen-anchored; ``bayer-t`` shifts the tile
     one subpixel right per frame and repeats after eight frames.
+
+    ``gate=True`` enables the variance gate: the offset is attenuated per
+    2x4 cell by how much real detail the CLEAN cell already carries (see
+    BTC_GATE_LO/HI), resolving the masks-vs-dither trade - flat areas get
+    smooth gradients, detailed areas keep their masks crisp.
 
     Dithering happens after FFmpeg scale/denoise/contrast/saturation and before
     the exhaustive BTC search, so masks and both RGB444 colours are judged
@@ -127,6 +143,14 @@ def apply_btc_ordered_dither(rgb, mode="none", frame_index=0, strength=1.0):
     # np.roll(tile, +phase): the old x sample moves one pixel right/frame.
     xx = (np.arange(w, dtype=np.int32)[None, :] - phase) & 7
     offset = BTC_BAYER8_CENTERED[yy, xx] * (17.0 * float(strength))
+    if gate:
+        # per-cell detail of the clean target: (24,4,80,2,3) std over the
+        # 8 subpixels, averaged across channels -> (24,80)
+        cells = rgb.reshape(24, 4, 80, 2, 3)
+        detail = cells.std(axis=(1, 3)).mean(axis=-1)
+        att = np.clip((BTC_GATE_HI - detail) / (BTC_GATE_HI - BTC_GATE_LO),
+                      0.0, 1.0)
+        offset = offset * np.repeat(np.repeat(att, 4, 0), 2, 1)
     return np.clip(rgb + offset[:, :, None], 0.0, 255.0).astype(np.float32)
 
 
@@ -146,7 +170,8 @@ def build_settings_comment(config):
         dither = config.get('btc_dither', 'none')
         if dither != 'none':
             s = float(config.get('btc_dither_strength', 0.5))
-            parts.append(f"dither={dither}@{s:g}")
+            parts.append(f"dither={dither}@{s:g}"
+                         + ("+gate" if config.get('btc_dither_gate') else ""))
     if config.get('denoise'):
         parts.append('denoise')
     if float(config.get('saturation', 1.0)) != 1.0:
@@ -857,6 +882,7 @@ def process_single_file(input_file, system, output_file, config):
     btc_stability = float(config.get('btc_stability', 0.0) or 0.0)
     btc_dither = config.get('btc_dither', 'none')
     btc_dither_strength = float(config.get('btc_dither_strength', 0.5))
+    btc_dither_gate = bool(config.get('btc_dither_gate', False))
     btc_prev_mask = np.zeros((24, 80), dtype=np.uint8)
     btc_prev_bg = np.zeros((24, 80, 3), dtype=np.uint8)
     btc_prev_fg = np.zeros((24, 80, 3), dtype=np.uint8)
@@ -866,7 +892,7 @@ def process_single_file(input_file, system, output_file, config):
     if c80_btc and btc_dither != 'none':
         temporal = "temporal, +1 px/frame" if btc_dither == 'bayer-t' else "static"
         print(f"    BTC dither: Bayer 8x8 ({temporal}, strength "
-              f"{btc_dither_strength:.2f})")
+              f"{btc_dither_strength:.2f}{', variance-gated' if btc_dither_gate else ''})")
         if btc_dither == 'bayer-t' and btc_stability > 0.0:
             print("    WARNING: bayer-t with BTC hysteresis attenuates the "
                   "deliberate frame-to-frame dither cycle")
@@ -937,7 +963,7 @@ def process_single_file(input_file, system, output_file, config):
                 # changes the target phase every frame.
                 rgb96 = apply_btc_ordered_dither(
                     rgb96_clean, btc_dither, frame_count,
-                    btc_dither_strength)
+                    btc_dither_strength, btc_dither_gate)
                 # Halfblock-baseline pass first: box-2x2 the 160x96 target to
                 # 80x48 and run the classic encoder (with its serpentine FS
                 # dither) on THAT - an optimal-halfblock baseline for the
@@ -1123,6 +1149,11 @@ def main():
                              "subpixel right per frame (bayer-t - the best-"
                              "looking variant in hardware tests). Encoder-side "
                              "only.")
+    parser.add_argument("--btc-dither-gate", action="store_true",
+                        help="c80btc: attenuate the Bayer pattern in cells "
+                             "that already carry real detail (per-cell "
+                             "variance gate), so dither smooths gradients "
+                             "without eating mask detail. Off by default.")
     parser.add_argument("--btc-dither-strength", type=float, default=0.5,
                         metavar="S",
                         help="Bayer strength for c80btc: 1.0 spans one RGB444 "
@@ -1222,6 +1253,7 @@ def main():
         'c80_btc': args.profile == 'c80btc',
         'btc_stability': btc_stability,
         'btc_dither': args.btc_dither,
+        'btc_dither_gate': args.btc_dither_gate,
         'btc_dither_strength': args.btc_dither_strength,
         'denoise': args.denoise,
         'title': args.title,
