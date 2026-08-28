@@ -153,6 +153,23 @@
         <div class="slider"><input id="cvBtcStab" type="range" min="0" max="0.5" step="0.05" value="0.10"></div>
         <small class="hint">Temporal hysteresis: higher = calmer, sharper-looking
         static detail, but stale cells may linger on slow fades. 0 = off.</small>
+        <label>BTC dithering</label>
+        <select id="cvBtcDither">
+          <option value="none">None (crispest masks - default)</option>
+          <option value="bayer">Bayer 8x8 static</option>
+          <option value="bayer-t">Bayer 8x8 temporal (hardware-test winner)</option>
+        </select>
+        <div id="btcDitherOpts" style="display:none">
+          <label>Dither strength <span class="pill" id="cvBtcDitherStrV">0.50</span></label>
+          <div class="slider"><input id="cvBtcDitherStr" type="range" min="0.05" max="1" step="0.05" value="0.5"></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+            <input id="cvBtcGate" type="checkbox" style="width:auto">
+            <label style="margin:0">Variance gate (dither gradients only, keep detail cells crisp)</label>
+          </div>
+          <small class="hint">Temporal Bayer sets stability to 0 (the shifting
+          pattern and hysteresis work against each other) - raise it back
+          manually to experiment.</small>
+        </div>
       </div>
     </fieldset>
     <fieldset>
@@ -334,6 +351,16 @@ $("#cvProfile").onchange = e => {
 $("#cvContrast").oninput = e => $("#cvContrastV").textContent = (+e.target.value).toFixed(2);
 $("#cvSat").oninput = e => $("#cvSatV").textContent = (+e.target.value).toFixed(2);
 $("#cvBtcStab").oninput = e => $("#cvBtcStabV").textContent = (+e.target.value).toFixed(2);
+$("#cvBtcDitherStr").oninput = e => $("#cvBtcDitherStrV").textContent = (+e.target.value).toFixed(2);
+$("#cvBtcDither").onchange = e => {
+  const v = e.target.value;
+  $("#btcDitherOpts").style.display = v==="none" ? "none" : "block";
+  // mirror the CLI default: bayer-t zeroes hysteresis, others restore 0.10
+  const stab = $("#cvBtcStab");
+  if (v === "bayer-t") { stab.value = 0; }
+  else if (+stab.value === 0) { stab.value = 0.10; }
+  $("#cvBtcStabV").textContent = (+stab.value).toFixed(2);
+};
 $("#cvVol").oninput = e => $("#cvVolV").textContent = e.target.value+" dB";
 $("#cvLoud").onchange = e => { const off=e.target.checked;
   $("#cvVol").disabled=off; $("#cvVolWrap").classList.toggle("off",off); };
@@ -342,6 +369,9 @@ function convCommon(fd){
   fd.append("avf2",$("#cvAvf2").checked); fd.append("title",$("#cvTitle").value);
   fd.append("author",$("#cvAuthor").value); fd.append("comment",$("#cvComment").value);
   fd.append("btc_stability",$("#cvBtcStab").value);
+  fd.append("btc_dither",$("#cvBtcDither").value);
+  fd.append("btc_dither_strength",$("#cvBtcDitherStr").value);
+  fd.append("btc_dither_gate",$("#cvBtcGate").checked);
 }
 function onConverted(blob, name){
   dlBlob(blob, name);

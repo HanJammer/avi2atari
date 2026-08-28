@@ -326,7 +326,12 @@ Ordered dithering is opt-in:
 python avi2atari.py matrix.mp4 --system PAL --profile c80btc --btc-dither bayer
 
 # Bayer shifted right one subpixel per frame; stability defaults to 0.
+# The hardware-test winner (at the default strength 0.5).
 python avi2atari.py matrix.mp4 --system PAL --profile c80btc --btc-dither bayer-t
+
+# Variance gate: dither only where banding lives (flat cells); cells
+# with real detail keep their masks crisp. Composes with either mode.
+python avi2atari.py matrix.mp4 --system PAL --profile c80btc --btc-dither bayer-t --btc-dither-gate
 ```
 
 `--btc-dither-strength S` controls the pattern strength (`1.0` = one

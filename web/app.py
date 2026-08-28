@@ -185,6 +185,12 @@ def _conv_args(inp, out_base, o, poster):
         argv += ["--profile", o["profile"]]
         if o["profile"] == "c80btc" and o.get("btc_stability") is not None:
             argv += ["--btc-stability", str(o["btc_stability"])]
+        if o["profile"] == "c80btc" and o.get("btc_dither", "none") != "none":
+            argv += ["--btc-dither", o["btc_dither"],
+                     "--btc-dither-strength",
+                     str(o.get("btc_dither_strength", 0.5))]
+            if o.get("btc_dither_gate"):
+                argv += ["--btc-dither-gate"]
     else:
         argv += ["--avf", "2" if o.get("avf2", True) else "1"]
     for k in ("title", "author", "comment"):
@@ -261,6 +267,13 @@ def _job_convert_urls(job, urls, opts):
                     if opts["profile"] == "c80btc" \
                             and opts.get("btc_stability") is not None:
                         argv += ["--btc-stability", str(opts["btc_stability"])]
+                    if opts["profile"] == "c80btc" \
+                            and opts.get("btc_dither", "none") != "none":
+                        argv += ["--btc-dither", opts["btc_dither"],
+                                 "--btc-dither-strength",
+                                 str(opts.get("btc_dither_strength", 0.5))]
+                        if opts.get("btc_dither_gate"):
+                            argv += ["--btc-dither-gate"]
                 else:
                     argv += ["--avf", "2" if opts.get("avf2", True) else "1"]
                 for k in ("title", "author", "comment"):
@@ -401,6 +414,9 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
                       volume: float = Form(12.0), poster_mode: str = Form("none"),
                       poster_frame: str = Form(""),
                       btc_stability: float = Form(None),
+                      btc_dither: str = Form("none"),
+                      btc_dither_strength: float = Form(0.5),
+                      btc_dither_gate: bool = Form(False),
                       poster_image: UploadFile = File(None)):
     payloads, total = [], 0
     for f in files:
@@ -412,7 +428,9 @@ async def api_convert(request: Request, files: list[UploadFile] = File(...),
     audit(request, f"convert:{system}:{profile}:{len(payloads)}f",
           ",".join(n for n, _ in payloads))
     opts = dict(system=system, profile=profile, avf2=avf2, title=title,
-                btc_stability=btc_stability,
+                btc_stability=btc_stability, btc_dither=btc_dither,
+                btc_dither_strength=btc_dither_strength,
+                btc_dither_gate=btc_dither_gate,
                 author=author, comment=comment, aspect=aspect,
                 contrast=contrast, saturation=saturation, loudnorm=loudnorm,
                 volume=volume, poster_mode=poster_mode)
@@ -430,7 +448,10 @@ async def api_convert_url(request: Request, urls: str = Form(...),
                           system: str = Form("PAL"), profile: str = Form("apac"),
                           avf2: bool = Form(True), title: str = Form(""),
                           author: str = Form(""), comment: str = Form(""),
-                          btc_stability: float = Form(None)):
+                          btc_stability: float = Form(None),
+                          btc_dither: str = Form("none"),
+                          btc_dither_strength: float = Form(0.5),
+                          btc_dither_gate: bool = Form(False)):
     if not YOUTUBE_ENABLED:
         raise HTTPException(403, "URL downloading is disabled on this server")
     url_list = [u.strip() for u in urls.splitlines() if u.strip()]
@@ -438,7 +459,9 @@ async def api_convert_url(request: Request, urls: str = Form(...),
         raise HTTPException(400, "no URLs given")
     audit(request, f"convert_url:{system}:{len(url_list)}", " ".join(url_list))
     opts = dict(system=system, profile=profile, avf2=avf2, title=title,
-                btc_stability=btc_stability,
+                btc_stability=btc_stability, btc_dither=btc_dither,
+                btc_dither_strength=btc_dither_strength,
+                btc_dither_gate=btc_dither_gate,
                 author=author, comment=comment)
     return {"job": _spawn(_job_convert_urls, url_list, opts)}
 
