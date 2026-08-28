@@ -148,6 +148,19 @@ plain half-block cell, and applies temporal hysteresis
 (`--btc-stability`) so static areas do not shimmer. BTC files degrade
 gracefully: an older C80 player simply shows them as 80x48 M4.
 
+BTC also has optional ordered dithering (`--btc-dither`). Static
+`bayer` uses a screen-anchored 8x8 Bayer matrix to trade fine texture
+for smoother RGB444 gradients while preserving temporal hysteresis.
+`bayer-t` shifts that matrix one subpixel right per frame; at 50/60 Hz
+it can average gradients more accurately, but deliberately creates
+full-field temporal activity and may crawl on sample-and-hold LCDs.
+Consequently dithering defaults to `none`, and `bayer-t` defaults
+`--btc-stability` to 0 unless the user supplies an explicit value.
+Hardware verdict (800XL + GTIA2RGB): `bayer-t` at strength `0.5`
+looked best - smoother gradients without the static pixel grid -
+at the cost of a subtle, deliberate shimmer; masks alone still
+carry the most detail, so `none` remains the default.
+
 ## Web GUI (self-host)
 
 A FastAPI web front-end wraps the whole suite - convert (single or
@@ -303,6 +316,23 @@ python avi2atari.py matrix.mp4 --system PAL --loudnorm --profile c80btc --title 
 off); `--denoise` adds a temporal-only source denoise that further calms
 glyph shimmer on grainy material.
 
+Ordered dithering is opt-in:
+
+```bash
+# Static, screen-anchored Bayer 8x8; hysteresis remains enabled.
+python avi2atari.py matrix.mp4 --system PAL --profile c80btc --btc-dither bayer
+
+# Bayer shifted right one subpixel per frame; stability defaults to 0.
+python avi2atari.py matrix.mp4 --system PAL --profile c80btc --btc-dither bayer-t
+```
+
+`--btc-dither-strength S` controls the pattern strength (`1.0` = one
+RGB444 step peak-to-peak, about +/-8.37; default `0.5` - the gentler
+pattern that won the hardware tests). The same
+threshold is applied to all RGB channels to avoid coloured speckle.
+Denoise happens first; Bayer is added afterwards to the final 160x96
+encoder target.
+
 ### Generate Test Signal
 
 Create a synthesized test file (SMPTE bars + 440Hz tone) to verify your hardware/cabling:
@@ -367,7 +397,7 @@ affects the audio tail-padding pattern, so pass the correct one for NTSC files.
 ## Parameters
 
 ```
-usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--profile {apac,c80m4,c80btc}] [--avf N] [--title TITLE] [--author AUTHOR] [--comment COMMENT] [--poster SECONDS] [--saturation SATURATION] [--contrast CONTRAST] [--aspect {stretch,fit}] [--allow-slow] [--denoise] [--btc-stability K] [--volume VOLUME | --loudnorm] [input]
+usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--out OUT] [--no-header] [--profile {apac,c80m4,c80btc}] [--avf N] [--title TITLE] [--author AUTHOR] [--comment COMMENT] [--poster SECONDS] [--saturation SATURATION] [--contrast CONTRAST] [--aspect {stretch,fit}] [--allow-slow] [--denoise] [--btc-stability K] [--btc-dither {none,bayer,bayer-t}] [--btc-dither-strength S] [--volume VOLUME | --loudnorm] [input]
 ```
 
 | **Parameter**  | **Description**                                                                                                                                                                                       |
@@ -383,11 +413,13 @@ usage: avi2atari.py [-h] [--test-gen] [--urllist] [--system {PAL,NTSC,BOTH}] [--
 | `--aspect`     | How to fit the source into 160x192: `stretch` (default, fills the frame - legacy behaviour) or `fit` (preserves the source aspect ratio and adds black bars). Use `fit` for 16:9 content to avoid squashing. |
 | `--profile`    | Video profile: `apac` (default), `c80m4` or `c80btc` - see [Video profiles](#video-profiles). The C80 profiles imply AVF2. |
 | `--avf`        | Container version: `2` = AVF2 metadata header (**default**), `1` = plain Legacy v1 (zeroed header, no metadata). `--no-header` implies `1`. |
-| `--btc-stability` | `c80btc` temporal hysteresis (default `0.10`, `0` = off): cells keep their previous mask/colours while the error stays within `(1+K)` of the per-frame optimum - kills static-area shimmer. |
+| `--btc-stability` | `c80btc` temporal hysteresis (`0` = off): cells keep their previous mask/colours while the error stays within `(1+K)` of the per-frame optimum. Default `0.10`, except `bayer-t` defaults to `0`; an explicit value is still allowed. |
+| `--btc-dither` | `c80btc` ordered dither: `none` (default), static screen-anchored `bayer` 8x8, or `bayer-t` shifted one subpixel right per frame. Encoder-side only; the AVF format and player are unchanged. |
+| `--btc-dither-strength` | Bayer strength from `0` to `1`. `1.0` spans one RGB444 step peak-to-peak (about +/-8.37); `0.5` keeps more mask detail. Default `0.5` (hardware-tested sweet spot). |
 | `--denoise`    | Temporal-only denoise of the source (no spatial blur) before encoding - calms glyph shimmer / dither crawl on grainy material, for every profile. |
 | `--title`      | AVF2: video title (ASCII, max 64 chars). Default: source filename.                                                                                                                                     |
 | `--author`     | AVF2: author of the conversion (ASCII, max 64 chars).                                                                                                                                                  |
-| `--comment`    | AVF2: free-text comment (ASCII, max 128 chars).                                                                                                                                                        |
+| `--comment`    | AVF2: free-text comment (ASCII, max 128 chars). Default: the conversion settings (profile, dither, stability, gains, audio mode), so every file self-documents how it was made. |
 | `--poster`     | AVF2: source timestamp (seconds) of the poster frame. Default: 10% of duration.                                                                                                                        |
 | `--no-header`  | Disables the 8KB blank header. **Warning:** This is test/debug option! Only use this if you know exactly how your loader works. Most players (like `movplay`) require the header for synchronization. |
 | `--test-gen`   | Generates a `test_tone.mp4` file and converts it. Useful for debugging audio issues and tuning contrast/saturation.                                                                                   |
@@ -451,10 +483,10 @@ If you find bugs or have ideas for better dithering algorithms:
 
 **Credits:**
 
-- Original concept: phaeron encvideo/encaudio/mux C++ sources.
-    
-- Python Port & Engineering: HanJammer & Lumen.
-    
-- Special thanks to MNEMOS for AVF format structural analysis.
+- Original AVF concept and format: Avery Lee (phaeron) - the
+  encvideo/encaudio/mux C++ sources this project grew far beyond.
+
+- Special thanks to AcidMaker (GTIA2RGB) for hardware testing and a
+  steady stream of good ideas.
 
 **Happy streaming!**

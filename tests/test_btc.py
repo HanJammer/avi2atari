@@ -231,10 +231,57 @@ def test_temporal_hysteresis():
        f"(-{100 - 100 * hyst_changes // max(1, stateless_changes)}%), "
        f"SSE ratio {hyst_sse / stateless_sse:.3f} <= 1+K")
 
+
+# 10. ordered-dither geometry and temporal phase ---------------------------
+def test_ordered_dither_geometry():
+    import avi2atari as a
+    rgb = np.full((96, 160, 3), 128.0, np.float32)
+    static0 = a.apply_btc_ordered_dither(rgb, "bayer", 0, 1.0)
+    static7 = a.apply_btc_ordered_dither(rgb, "bayer", 7, 1.0)
+    temp0 = a.apply_btc_ordered_dither(rgb, "bayer-t", 0, 1.0)
+    temp1 = a.apply_btc_ordered_dither(rgb, "bayer-t", 1, 1.0)
+    temp8 = a.apply_btc_ordered_dither(rgb, "bayer-t", 8, 1.0)
+
+    assert np.array_equal(static0, static7), "static Bayer moved with frame index"
+    assert not np.array_equal(temp0, temp1), "temporal Bayer phase did not move"
+    assert np.array_equal(temp0, temp8), "temporal Bayer must repeat every 8 frames"
+    delta = static0 - rgb
+    assert np.array_equal(delta[:, :, 0], delta[:, :, 1])
+    assert np.array_equal(delta[:, :, 1], delta[:, :, 2])
+    assert abs(float(delta.mean())) < 1e-6
+    assert float(np.max(np.abs(delta))) < 8.5
+    ok("dither: static is anchored; bayer-t shifts and repeats; shared RGB offset")
+
+
+# 11. the halfblock guarantee is scoped to the dithered target --------------
+def test_dithered_target_beats_baseline():
+    import avi2atari as a
+    x = np.linspace(0.0, 255.0, 160, dtype=np.float32)
+    clean = np.broadcast_to(x[None, :, None], (96, 160, 3)).copy()
+    target = a.apply_btc_ordered_dither(clean, "bayer", 0, 1.0)
+    rgb48 = target.reshape(48, 2, 80, 2, 3).mean(axis=(1, 3))
+    classic = a.encode_c80m4_frame(rgb48)
+    ca = classic.reshape(24, 8, 40)
+    leg = np.stack([ca[:, 2:4, :].reshape(24, 80),
+                    ca[:, 4:6, :].reshape(24, 80),
+                    ca[:, 6:8, :].reshape(24, 80)], -1)
+    leg_bg = ((leg >> 4) & 0xF).astype(np.uint8)
+    leg_fg = (leg & 0xF).astype(np.uint8)
+    enc = a.encode_c80btc_frame(target, leg_bg, leg_fg, *_state(), 0, 0.0)
+    btc_rec = avf.decode_c80btc_rgb(enc.tobytes()).astype(np.float64)
+    base_rec = np.repeat(np.repeat(
+        avf.decode_c80_rgb(classic.tobytes()).astype(np.float64), 2, 0), 2, 1)
+    btc_sse = float(((btc_rec - target) ** 2).sum())
+    base_sse = float(((base_rec - target) ** 2).sum())
+    assert btc_sse <= base_sse, (btc_sse, base_sse)
+    ok(f"dither quality scope: BTC SSE {btc_sse:.3e} <= dithered-target "
+       f"baseline {base_sse:.3e}")
+
 if __name__ == "__main__":
     for t in (test_header_valid, test_illegal_combos, test_mask_geometry,
               test_roundtrip, test_beats_baseline, test_tools_preserve_flag,
               test_poster_classic_enforced, test_preview_routing,
-              test_temporal_hysteresis):
+              test_temporal_hysteresis, test_ordered_dither_geometry,
+              test_dithered_target_beats_baseline):
         t()
     print(f"ALL {PASSED} TESTS PASSED")

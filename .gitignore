@@ -7,3 +7,4 @@ docs/
 __pycache__/
 .env
 downloads/
+*.raw

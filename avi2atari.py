@@ -59,7 +59,7 @@ except ImportError:
     prange = range
     print("WARNING: numba unavailable - encoding runs unaccelerated (slow).")
 
-__version__ = "0.8"
+__version__ = "0.9"
 
 import avf_format as avf
 
@@ -83,6 +83,83 @@ PROFILE_C80M4 = avf.PROFILE_C80M4
 C80_HALFBLOCK = avf.C80_HALFBLOCK
 SECONDS_PER_FRAME_PAL = avf.SECONDS_PER_FRAME_PAL
 SECONDS_PER_FRAME_NTSC = avf.SECONDS_PER_FRAME_NTSC
+
+
+# --- C80/BTC ORDERED DITHER -------------------------------------------------
+# Standard 8x8 Bayer ranks.  A 4x4 tile resonates with the 2x4 BTC cell:
+# every cell row sees the same vertical phase and only two horizontal cell
+# fragments repeat across the screen.  8x8 gives eight distinct aligned 2x4
+# fragments (4 cell phases horizontally x 2 vertically), reducing that grid.
+BTC_BAYER8 = np.array([
+    [ 0, 32,  8, 40,  2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44,  4, 36, 14, 46,  6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [ 3, 35, 11, 43,  1, 33,  9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47,  7, 39, 13, 45,  5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+], dtype=np.float32)
+BTC_BAYER8_CENTERED = (BTC_BAYER8 + 0.5) / 64.0 - 0.5
+
+
+def apply_btc_ordered_dither(rgb, mode="none", frame_index=0, strength=1.0):
+    """Return the C80/BTC target with an absolute-coordinate Bayer offset.
+
+    ``strength=1`` spans one RGB444 quantisation step peak-to-peak: the
+    midpoint-normalised 8x8 ranks produce offsets just inside +/-8.5.  The
+    SAME scalar offset is added to R/G/B, avoiding independent-channel chroma
+    speckle.  Static ``bayer`` is screen-anchored; ``bayer-t`` shifts the tile
+    one subpixel right per frame and repeats after eight frames.
+
+    Dithering happens after FFmpeg scale/denoise/contrast/saturation and before
+    the exhaustive BTC search, so masks and both RGB444 colours are judged
+    against the same dithered target.  The caller keeps the clean target for
+    the classic AVF2 poster.
+    """
+    if mode == "none" or strength <= 0.0:
+        return rgb
+    if mode not in ("bayer", "bayer-t"):
+        raise ValueError(f"unknown BTC dither mode: {mode}")
+    h, w = rgb.shape[:2]
+    phase = (int(frame_index) & 7) if mode == "bayer-t" else 0
+    yy = np.arange(h, dtype=np.int32)[:, None] & 7
+    # np.roll(tile, +phase): the old x sample moves one pixel right/frame.
+    xx = (np.arange(w, dtype=np.int32)[None, :] - phase) & 7
+    offset = BTC_BAYER8_CENTERED[yy, xx] * (17.0 * float(strength))
+    return np.clip(rgb + offset[:, :, None], 0.0, 255.0).astype(np.float32)
+
+
+def build_settings_comment(config):
+    """Default AVF2 comment: the conversion settings, compactly.
+
+    Used when the user gives no --comment, so every file self-documents
+    how it was made. Defaults (1.0 gains, stretch, no denoise) are
+    omitted to keep it short; the audio mode is always included."""
+    parts = []
+    if config.get('profile') == PROFILE_C80M4:
+        parts.append('c80btc' if config.get('c80_btc') else 'c80m4')
+    else:
+        parts.append('apac')
+    if config.get('c80_btc'):
+        parts.append(f"stab={float(config.get('btc_stability', 0.0)):.2f}")
+        dither = config.get('btc_dither', 'none')
+        if dither != 'none':
+            s = float(config.get('btc_dither_strength', 0.5))
+            parts.append(f"dither={dither}@{s:g}")
+    if config.get('denoise'):
+        parts.append('denoise')
+    if float(config.get('saturation', 1.0)) != 1.0:
+        parts.append(f"sat={float(config['saturation']):g}")
+    if float(config.get('contrast', 1.0)) != 1.0:
+        parts.append(f"con={float(config['contrast']):g}")
+    if config.get('aspect') == 'fit':
+        parts.append('fit')
+    if config.get('loudnorm'):
+        parts.append('loudnorm')
+    else:
+        parts.append(f"vol={float(config.get('volume', 0.0)):g}dB")
+    return " ".join(parts)
 
 
 # --- AVF2 METADATA HEADER --- (built by the shared avf_format lib)
@@ -778,12 +855,21 @@ def process_single_file(input_file, system, output_file, config):
 
     # C80/BTC temporal-hysteresis state (per file; see encode_c80btc_frame)
     btc_stability = float(config.get('btc_stability', 0.0) or 0.0)
+    btc_dither = config.get('btc_dither', 'none')
+    btc_dither_strength = float(config.get('btc_dither_strength', 0.5))
     btc_prev_mask = np.zeros((24, 80), dtype=np.uint8)
     btc_prev_bg = np.zeros((24, 80, 3), dtype=np.uint8)
     btc_prev_fg = np.zeros((24, 80, 3), dtype=np.uint8)
     btc_prev_valid = 0
     if c80_btc and btc_stability > 0.0:
         print(f"    BTC temporal stability: {btc_stability:.2f}")
+    if c80_btc and btc_dither != 'none':
+        temporal = "temporal, +1 px/frame" if btc_dither == 'bayer-t' else "static"
+        print(f"    BTC dither: Bayer 8x8 ({temporal}, strength "
+              f"{btc_dither_strength:.2f})")
+        if btc_dither == 'bayer-t' and btc_stability > 0.0:
+            print("    WARNING: bayer-t with BTC hysteresis attenuates the "
+                  "deliberate frame-to-frame dither cycle")
 
     f_vid = open(temp_vid, "rb")
 
@@ -812,7 +898,8 @@ def process_single_file(input_file, system, output_file, config):
         avf2_meta = {
             'title': config['title'] or os.path.splitext(os.path.basename(input_file))[0],
             'author': config['author'],
-            'comment': config['comment'],
+            # no explicit comment -> self-document the conversion settings
+            'comment': config['comment'] or build_settings_comment(config),
         }
 
     try:
@@ -844,7 +931,13 @@ def process_single_file(input_file, system, output_file, config):
             a_chunk = np.frombuffer(a_data, dtype=np.uint8)
 
             if c80_btc:
-                rgb96 = np.frombuffer(rgb_data, dtype=np.uint8).reshape((96, 160, 3)).astype(np.float32)
+                rgb96_clean = np.frombuffer(rgb_data, dtype=np.uint8).reshape((96, 160, 3)).astype(np.float32)
+                # Ordered dither is a target pre-pass.  Static Bayer remains
+                # compatible with temporal hysteresis; bayer-t deliberately
+                # changes the target phase every frame.
+                rgb96 = apply_btc_ordered_dither(
+                    rgb96_clean, btc_dither, frame_count,
+                    btc_dither_strength)
                 # Halfblock-baseline pass first: box-2x2 the 160x96 target to
                 # 80x48 and run the classic encoder (with its serpentine FS
                 # dither) on THAT - an optimal-halfblock baseline for the
@@ -881,7 +974,15 @@ def process_single_file(input_file, system, output_file, config):
             # BTC streams store the CLASSIC C80 encoding as the poster
             # (spec section 5: thumbnails need no BTC awareness).
             if config['avf2'] and frame_count <= poster_idx:
-                poster_data = (classic_vid if c80_btc else encoded_vid).flatten().tobytes()
+                if c80_btc and btc_dither != 'none':
+                    # The AVF2 poster is classic C80 and intentionally remains
+                    # clean: do not bake the stream's Bayer texture into a
+                    # static information-screen image.
+                    poster_rgb48 = rgb96_clean.reshape(48, 2, 80, 2, 3).mean(axis=(1, 3))
+                    poster_vid = encode_c80m4_frame(poster_rgb48)
+                    poster_data = poster_vid.flatten().tobytes()
+                else:
+                    poster_data = (classic_vid if c80_btc else encoded_vid).flatten().tobytes()
 
             # Both profiles share the exact APAC container (8704-byte
             # frames, same block/pad + audio mux). C80 differs ONLY in the
@@ -1007,13 +1108,28 @@ def main():
                              "spatial blur) before scaling. Reduces glyph "
                              "shimmer on noisy/grainy material for every "
                              "profile; static detail stays sharp.")
-    parser.add_argument("--btc-stability", type=float, default=0.10, metavar="K",
+    parser.add_argument("--btc-stability", type=float, default=None, metavar="K",
                         help="c80btc temporal hysteresis: keep a cell's previous "
                              "mask+colours while their error stays within "
                              "(1+K) of the per-frame optimum. Kills mask "
                              "flicker in static areas at a bounded cost; "
-                             "0 = off (stateless). Default: 0.10. "
+                             "0 = off (stateless). Default: 0.10, except "
+                             "bayer-t defaults to 0. "
                              "Encoder-side only - files stay fully compatible.")
+    parser.add_argument("--btc-dither", choices=['none', 'bayer', 'bayer-t'],
+                        default='none',
+                        help="c80btc ordered dither: none (default), static "
+                             "screen-anchored Bayer 8x8, or Bayer shifted one "
+                             "subpixel right per frame (bayer-t - the best-"
+                             "looking variant in hardware tests). Encoder-side "
+                             "only.")
+    parser.add_argument("--btc-dither-strength", type=float, default=0.5,
+                        metavar="S",
+                        help="Bayer strength for c80btc: 1.0 spans one RGB444 "
+                             "step peak-to-peak (about +/-8.37); 0.5 is a "
+                             "gentler half-strength pattern that keeps more "
+                             "mask detail. Range 0..1, default 0.5 (hardware-"
+                             "tested sweet spot).")
     parser.add_argument("--aspect", choices=['stretch', 'fit'], default='stretch',
                         help="How to fit source into 160x192: 'stretch' (legacy default, "
                              "fills the frame) or 'fit' (preserves source aspect ratio with "
@@ -1073,6 +1189,26 @@ def main():
         print("       or pass --allow-slow if you really mean it.")
         sys.exit(1)
 
+    if not 0.0 <= args.btc_dither_strength <= 1.0:
+        print("ERROR: --btc-dither-strength must be between 0 and 1.")
+        sys.exit(1)
+    if args.btc_dither != 'none' and args.profile != 'c80btc':
+        print("ERROR: --btc-dither is only valid with --profile c80btc.")
+        sys.exit(1)
+
+    # Temporal Bayer wants to complete its eight-frame phase cycle.  Keep
+    # explicitly requested hysteresis legal for experiments, but make the
+    # temporal mode's default stateless instead of silently fighting it.
+    if args.btc_stability is None:
+        btc_stability = 0.0 if args.btc_dither == 'bayer-t' else 0.10
+    else:
+        btc_stability = max(0.0, args.btc_stability)
+    if args.profile == 'c80btc' and args.btc_dither == 'bayer-t' \
+            and args.btc_stability is None:
+        print("NOTE: --btc-dither bayer-t defaults BTC stability to 0; "
+              "pass an explicit --btc-stability value to "
+              "experiment with their interaction.")
+
     # Config dictionary
     config = {
         'no_header': args.no_header,
@@ -1084,7 +1220,9 @@ def main():
         'avf2': avf_ver == 2,
         'profile': PROFILE_C80M4 if args.profile in ('c80m4', 'c80btc') else PROFILE_APAC,
         'c80_btc': args.profile == 'c80btc',
-        'btc_stability': max(0.0, args.btc_stability),
+        'btc_stability': btc_stability,
+        'btc_dither': args.btc_dither,
+        'btc_dither_strength': args.btc_dither_strength,
         'denoise': args.denoise,
         'title': args.title,
         'author': args.author,
