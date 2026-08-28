@@ -255,7 +255,7 @@
     </a>
     <a class="kofi" href="https://ko-fi.com/J3J6PON1Z" target="_blank" rel="noopener">&#9749; Buy me a Ko-fi</a>
   </div>
-  &copy; HanJammer / Rusty Bits 2026
+  <span id="footCopy">AVI2ATARI WebUI &copy; HanJammer / Rusty Bits 2026</span>
 </footer>
 
 <script>
@@ -270,6 +270,8 @@ fetch("/api/config").then(r=>r.json()).then(c=>{
     $("#appTitle").innerHTML =
       "AVI2ATARI " + c.converter_version + " &middot; AVF Suite";
     document.title = "AVI2ATARI " + c.converter_version + " AVF Suite";
+    $("#footCopy").innerHTML = "AVI2ATARI " + c.converter_version
+      + " WebUI &copy; HanJammer / Rusty Bits 2026";
   }
   if (c.youtube_enabled) $("#urlWrap").style.display = "block";
   if (c.server_mode) {
