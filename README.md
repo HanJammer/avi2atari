@@ -1,3 +1,5 @@
+
+
 # avi2atari
 
 A modern, all-in-one Python tool for converting video files into the **AVF** format used by [**AV2PLAY**](https://github.com/HanJammer/av2play), original **movplay** or [**AVFplay**](https://github.com/jhusak/avgcart_avfplay) on **Atari 8-bit** computers.
@@ -397,8 +399,9 @@ python avf_check.py raw.avf --no-header --system PAL
 ```
 
 It prints a short report and exits `0` on success or `1` on the first structural
-problem it finds (handy in scripts/CI). `--system` defaults to `PAL`; it only
-affects the audio tail-padding pattern, so pass the correct one for NTSC files.
+problem it finds (handy in scripts/CI). `--system` defaults to `PAL`; it affects
+the audio tail-padding pattern and, for AVF2 files, the header system
+cross-check, so pass the correct one for NTSC files.
 
 ---
 
